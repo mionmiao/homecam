@@ -1,0 +1,11 @@
+node_modules/
+data/
+.env
+dist/
+*.iml
+.gradle/
+**/build/
+local.properties
+
+# 本地记忆含敏感凭据，绝不入库
+.workbuddy/

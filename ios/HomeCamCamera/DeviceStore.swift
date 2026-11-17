@@ -1,0 +1,24 @@
+import Foundation
+
+struct DeviceCredentials: Codable { let serverURL: URL; let deviceID: String; let deviceSecret: String; let name: String }
+
+final class DeviceStore {
+    private let key = "homecam-device-credentials"
+    func load() -> DeviceCredentials? { UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(DeviceCredentials.self, from: $0) } }
+    func save(_ credentials: DeviceCredentials) { UserDefaults.standard.set(try? JSONEncoder().encode(credentials), forKey: key) }
+    func clear() { UserDefaults.standard.removeObject(forKey: key) }
+}
+
+enum PairingAPI {
+    static func pair(serverURL: URL, name: String, code: String) async throws -> DeviceCredentials {
+        let endpoint = serverURL.appending(path: "api/devices/pair")
+        var request = URLRequest(url: endpoint); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name, "code": code])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw PairingError.failed }
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let device = object?["device"] as? [String: Any], let id = device["id"] as? String, let secret = object?["deviceSecret"] as? String else { throw PairingError.failed }
+        return DeviceCredentials(serverURL: serverURL, deviceID: id, deviceSecret: secret, name: name)
+    }
+}
+enum PairingError: LocalizedError { case failed; var errorDescription: String? { "配对码无效、已过期，或服务器暂时不可用。" } }

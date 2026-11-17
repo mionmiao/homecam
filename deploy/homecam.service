@@ -1,0 +1,15 @@
+[Unit]
+Description=HomeCam service
+After=network.target
+
+[Service]
+Type=simple
+User=homecam
+WorkingDirectory=/opt/homecam
+EnvironmentFile=/opt/homecam/.env
+ExecStart=/usr/bin/node /opt/homecam/server/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

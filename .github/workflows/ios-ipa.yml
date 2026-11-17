@@ -1,0 +1,72 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/ios-ipa.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate --spec project.yml
+
+      - name: Resolve Swift Package dependencies
+        working-directory: ios
+        run: xcodebuild -resolvePackageDependencies -project HomeCamCamera.xcodeproj -scheme HomeCamCamera
+
+      # No Apple ID, no certificate, no provisioning profile: the app is built
+      # unsigned and LiveContainer re-signs it with its own certificate in
+      # JIT-less mode. Nothing here needs a paid developer account.
+      - name: Build unsigned archive
+        working-directory: ios
+        run: |
+          xcodebuild archive \
+            -project HomeCamCamera.xcodeproj \
+            -scheme HomeCamCamera \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/HomeCamCamera.xcarchive" \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER=""
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP=$(find "$RUNNER_TEMP/HomeCamCamera.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$APP"
+          STAGE="$RUNNER_TEMP/ipa-stage"
+          mkdir -p "$STAGE/Payload"
+          cp -R "$APP" "$STAGE/Payload/"
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE/Payload" "$RUNNER_TEMP/HomeCamCamera.ipa"
+          shasum -a 256 "$RUNNER_TEMP/HomeCamCamera.ipa" | tee "$RUNNER_TEMP/HomeCamCamera.ipa.sha256"
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-unsigned
+          name: HomeCam Camera (unsigned IPA for LiveContainer)
+          body: |
+            未签名 IPA，供 LiveContainer + SideStore **JIT-less 模式**导入。
+
+            下载 `HomeCamCamera.ipa` → 在 LiveContainer 中点「+」导入 → 启动前确认
+            JIT-less 诊断已通过（设置 → 从 SideStore 导入证书 → JIT-Less Mode Diagnose）。
+
+            此包不含任何签名或私钥；不需要付费 Apple Developer 账号。
+          make_latest: true
+          files: |
+            ${{ runner.temp }}/HomeCamCamera.ipa
+            ${{ runner.temp }}/HomeCamCamera.ipa.sha256
