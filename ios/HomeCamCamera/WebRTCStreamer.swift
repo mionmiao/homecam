@@ -24,7 +24,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         let source = factory.videoSource(); let camera = RTCCameraVideoCapturer(delegate: source)
         guard let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == .back }) ?? RTCCameraVideoCapturer.captureDevices().first else { throw StreamerError.unavailable }
         guard let format = RTCCameraVideoCapturer.supportedFormats(for: device).max(by: { $0.formatDescription.dimensions.width < $1.formatDescription.dimensions.width }) else { throw StreamerError.unavailable }
-        camera.startCapture(with: device, format: format, fps: min(RTCCameraVideoCapturer.fps(for: format).max() ?? 12, 12))
+        let maxFps = format.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 12
+        camera.startCapture(with: device, format: format, fps: min(Int(maxFps), 12))
         videoSource = source; capturer = camera
         peer.add(factory.videoTrack(with: source, trackId: "video"), streamIds: ["homecam"])
         peer.add(factory.audioTrack(with: factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)), trackId: "audio"), streamIds: ["homecam"])
