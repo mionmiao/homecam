@@ -142,7 +142,9 @@ io.on('connection', (socket) => {
   socket.on('signal', ({ targetId, data }) => {
     if (!targetId || !data) return;
     const target = socket.data.role === 'device' ? viewerSockets.get(targetId) : deviceSockets.get(targetId);
-    target?.emit('signal', { fromId: socket.id, data });
+    // 观看端按 deviceId 校验来源；socket.id 与配对生成的 deviceId 不同，必须发业务 id
+    const fromId = socket.data.role === 'device' ? socket.data.deviceId : socket.id;
+    target?.emit('signal', { fromId, data });
   });
   const stop = (deviceId, viewerId) => {
     if (!deviceId || activeViews.get(deviceId) !== viewerId) return;
