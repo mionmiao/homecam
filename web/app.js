@@ -1,13 +1,15 @@
 const $ = (selector) => document.querySelector(selector);
 let token = localStorage.getItem('homecam-token'); let socket; let selected; let peer; let recorder; let chunks = []; let watching = false; let pendingCandidates = [];
 const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton') };
-const view = { rotation: 0, zoom: 1, mirrored: false, exposure: 1 };
+const view = { rotation: 0, zoom: 1, mirrored: false, exposure: 0 }; // exposure in EV (stops)
 function applyView() {
   ui.video.style.transform = `rotate(${view.rotation}deg) scale(${view.zoom}) scaleX(${view.mirrored ? -1 : 1})`;
-  ui.video.style.filter = `brightness(${view.exposure})`;
+  ui.video.style.filter = `brightness(${Math.pow(2, view.exposure)})`;
+  const ev = view.exposure;
+  $('#exposureInfo').textContent = `${ev > 0 ? '+' : ''}${ev.toFixed(1)} EV`;
   $('#viewInfo').textContent = `${Math.round(view.zoom * 100)}%${view.mirrored ? ' 镜像' : ''}${view.rotation ? ' ' + view.rotation + '°' : ''}`;
 }
-function resetView() { view.rotation = 0; view.zoom = 1; view.mirrored = false; view.exposure = 1; $('#exposure').value = 1; applyView(); }
+function resetView() { view.rotation = 0; view.zoom = 1; view.mirrored = false; view.exposure = 0; $('#exposure').value = 0; applyView(); }
 const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` });
 function expire() { localStorage.removeItem('homecam-token'); sessionStorage.setItem('homecam-expired', '1'); location.reload(); }
 async function api(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...authHeaders(), ...options.headers } }); if (response.status === 401) { expire(); throw new Error('登录已过期'); } if (!response.ok) throw new Error((await response.json()).error || '请求失败'); return response.json(); }
