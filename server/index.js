@@ -23,7 +23,7 @@ const id = () => crypto.randomUUID();
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const safeEqual = (a, b) => crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const sign = (payload) => {
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 12 * 60 * 60 * 1000 })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 })).toString('base64url');
   return `${body}.${crypto.createHmac('sha256', tokenSecret).update(body).digest('base64url')}`;
 };
 const verify = (token) => {
