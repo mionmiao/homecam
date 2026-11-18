@@ -12,6 +12,7 @@ final class SignalingClient {
     var onConnected: (() -> Void)?; var onReconnected: (() -> Void)?
     var onWatchStart: ((String, [IceServerConfiguration]) -> Void)?
     var onWatchStop: (() -> Void)?; var onSignal: ((SignalingMessage) -> Void)?; var onError: ((String) -> Void)?
+    var onRemoved: (() -> Void)?
     private let credentials: DeviceCredentials; private let manager: SocketManager; private let socket: SocketIOClient
     private var viewerID: String?
     private var pendingCandidates: [CandidateMessage] = []
@@ -48,6 +49,7 @@ final class SignalingClient {
             self.onWatchStop?()
         }
         socket.on("signal") { [weak self] data, _ in self?.handleSignal(data) }
+        socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
     }
     func connect() { socket.connect() }
     func disconnect() { socket.disconnect() }

@@ -65,6 +65,12 @@ final class CameraAppModel: ObservableObject {
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
         client.onWatchStop = { [weak self] in Task { @MainActor in self?.stream.stop() } }
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
+        client.onRemoved = { [weak self] in Task { @MainActor in
+            guard let self else { return }
+            self.stream.stop(); client.disconnect(); self.signaling = nil; self.store.clear()
+            self.isPaired = false; self.isStreaming = false; self.statusText = "未配对"
+            self.errorMessage = "此设备已被观看端删除，请重新配对。"
+        }}
         signaling = client; client.connect()
     }
 

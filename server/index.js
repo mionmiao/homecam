@@ -71,6 +71,27 @@ app.post('/api/devices/pair', (req, res) => {
   broadcastDevices();
   res.status(201).json({ device: publicDevice(device), deviceSecret: secret });
 });
+app.patch('/api/devices/:id', requireUser, (req, res) => {
+  const device = db.devices.find((d) => d.id === req.params.id);
+  if (!device) return res.status(404).json({ error: '设备不存在' });
+  const name = String(req.body?.name ?? '').trim().slice(0, 50);
+  if (!name) return res.status(400).json({ error: '名称不能为空' });
+  device.name = name; save(); broadcastDevices();
+  res.json({ device: publicDevice(device) });
+});
+app.delete('/api/devices/:id', requireUser, (req, res) => {
+  const index = db.devices.findIndex((d) => d.id === req.params.id);
+  if (index < 0) return res.status(404).json({ error: '设备不存在' });
+  const deviceId = req.params.id;
+  db.devices.splice(index, 1); save();
+  // 释放观看会话，通知观看端停止；通知设备端清除本地配对
+  const viewerId = activeViews.get(deviceId);
+  if (viewerId) { activeViews.delete(deviceId); viewerSockets.get(viewerId)?.emit('device:removed', { deviceId }); }
+  const deviceSocket = deviceSockets.get(deviceId);
+  if (deviceSocket) { deviceSocket.emit('device:removed'); deviceSocket.disconnect(true); deviceSockets.delete(deviceId); }
+  broadcastDevices();
+  res.json({ ok: true });
+});
 
 const httpServer = app.listen(port, () => console.log(`HomeCam listening on :${port}`));
 const io = new Server(httpServer, { cors: { origin: false } });
