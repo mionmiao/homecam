@@ -63,6 +63,7 @@ final class SignalingClient {
         for candidate in buffered { sendCandidate(candidate) }
     }
     func sendStopped() { socket.emit("stream:state", ["state": "idle"]) }
+    func sendState(_ state: String) { socket.emit("stream:state", ["state": state]) }
     func sendAnswer(_ sdp: String) { send(data: ["type": "answer", "sdp": sdp]) }
     func sendCandidate(_ candidate: CandidateMessage) {
         guard viewerID != nil else { pendingCandidates.append(candidate); return }

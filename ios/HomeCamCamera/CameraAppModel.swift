@@ -20,8 +20,11 @@ final class CameraAppModel: ObservableObject {
     init() {
         if let credentials = store.load() { configure(credentials) }
         stream.onStateChanged = { [weak self] state in Task { @MainActor in
-            self?.isStreaming = state == .streaming
-            self?.statusText = state.label
+            guard let self else { return }
+            self.isStreaming = state == .streaming
+            self.statusText = state.label
+            // 把采集端状态实时上报，观看端可据此判断卡在哪一步
+            self.signaling?.sendState(state == .streaming ? "streaming" : state == .connecting ? "connecting" : "idle")
         }}
         stream.onLocalCandidate = { [weak self] candidate in Task { @MainActor in self?.signaling?.sendCandidate(candidate) } }
     }
