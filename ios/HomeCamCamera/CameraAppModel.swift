@@ -70,6 +70,7 @@ final class CameraAppModel: ObservableObject {
         client.onWatchStop = { [weak self] in Task { @MainActor in self?.stream.stop() } }
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
         client.onSwitchCamera = { [weak self] in Task { @MainActor in self?.stream.switchCamera() } }
+        client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }
         client.onRemoved = { [weak self] in Task { @MainActor in
             guard let self else { return }
             self.stream.stop(); client.disconnect(); self.signaling = nil; self.store.clear()

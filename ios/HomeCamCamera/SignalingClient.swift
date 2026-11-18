@@ -14,6 +14,7 @@ final class SignalingClient {
     var onWatchStop: (() -> Void)?; var onSignal: ((SignalingMessage) -> Void)?; var onError: ((String) -> Void)?
     var onRemoved: (() -> Void)?
     var onSwitchCamera: (() -> Void)?
+    var onDiagnostic: ((String) -> Void)?
     private let credentials: DeviceCredentials; private let manager: SocketManager; private let socket: SocketIOClient
     private var viewerID: String?
     private var pendingCandidates: [CandidateMessage] = []
@@ -76,11 +77,31 @@ final class SignalingClient {
     private func send(data: [String: Any]) { guard let viewerID else { return }; socket.emit("signal", ["targetId": viewerID, "data": data]) }
     private func handleWatchStart(_ values: [Any]) {
         guard let message = values.first as? [String: Any], let viewerID = message["viewerId"] as? String else { return }
-        let ice = (message["iceServers"] as? [[String: Any]] ?? []).compactMap { item -> IceServerConfiguration? in
-            let urls = (item["urls"] as? [String]) ?? (item["urls"] as? String).map { [$0] } ?? []
-            return urls.isEmpty ? nil : IceServerConfiguration(urls: urls, username: item["username"] as? String ?? "", credential: item["credential"] as? String ?? "")
+        // Socket.IO Swift 反序列化可能是 NSArray/NSDictionary 桥接，直接 as? [String] 或
+        // as? [[String: Any]] 会失败导致 TURN 配置丢失。逐层兼容解析。
+        let rawServers = Self.anyArray(message["iceServers"])
+        let ice = rawServers.compactMap { item -> IceServerConfiguration? in
+            guard let dict = item as? [String: Any] ?? (item as? NSDictionary) as? [String: Any] else { return nil }
+            let urls = Self.stringArray(dict["urls"])
+            guard !urls.isEmpty else { return nil }
+            return IceServerConfiguration(urls: urls,
+                                          username: dict["username"] as? String ?? "",
+                                          credential: dict["credential"] as? String ?? "")
         }
+        onDiagnostic?("ICE parsed: \(ice.count) servers, urls=\(ice.map { $0.urls.joined(separator: ",") }.joined(separator: " | "))")
         onWatchStart?(viewerID, ice)
+    }
+    private static func anyArray(_ value: Any?) -> [Any] {
+        if let arr = value as? [Any] { return arr }
+        if let arr = value as? NSArray { return arr as? [Any] ?? [] }
+        return []
+    }
+    private static func stringArray(_ value: Any?) -> [String] {
+        if let str = value as? String { return [str] }
+        if let arr = value as? [String] { return arr }
+        if let arr = value as? [Any] { return arr.compactMap { $0 as? String } }
+        if let arr = value as? NSArray { return arr.compactMap { $0 as? String } }
+        return []
     }
     private func handleSignal(_ values: [Any]) {
         guard let envelope = values.first as? [String: Any], let payload = envelope["data"] as? [String: Any], let type = payload["type"] as? String else { return }
