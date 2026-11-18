@@ -88,7 +88,10 @@ final class CameraAppModel: ObservableObject {
         }}
         client.onWatchStart = { [weak self] viewerID, iceServers in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers) } }
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
-        client.onWatchStop = { [weak self] in Task { @MainActor in self?.stream.stop("watch-stop") } }
+        client.onWatchStop = { [weak self] in Task { @MainActor in
+            guard let self, self.isStreaming else { return }  // 已停止时不再 stop，避免 idle 上报死循环
+            self.stream.stop("watch-stop")
+        }}
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
         client.onSwitchCamera = { [weak self] in Task { @MainActor in self?.stream.switchCamera() } }
         client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }

@@ -147,7 +147,8 @@ io.on('connection', (socket) => {
     target?.emit('signal', { fromId, data });
   });
   const stop = (deviceId, viewerId) => {
-    if (!deviceId || activeViews.get(deviceId) !== viewerId) return;
+    // viewerId 为空（已释放/重复 idle 上报）直接返回，避免 idle↔watch:stop 死循环
+    if (!deviceId || !viewerId || activeViews.get(deviceId) !== viewerId) return;
     activeViews.delete(deviceId); deviceSockets.get(deviceId)?.emit('watch:stop'); viewerSockets.get(viewerId)?.emit('watch:stopped', { deviceId }); notify(deviceId, 'idle');
   };
   socket.on('watch:stop', ({ deviceId }) => stop(deviceId, socket.id));
