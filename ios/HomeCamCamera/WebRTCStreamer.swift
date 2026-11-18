@@ -28,6 +28,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         guard peer == nil else { return }
         let configuration = RTCConfiguration(); configuration.sdpSemantics = .unifiedPlan
         configuration.iceServers = iceServers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
+        onDiagnostic?("RTCIceServer built: count=\(configuration.iceServers.count), users=\(iceServers.map { $0.username.isEmpty ? "EMPTY" : "set(\($0.username.count))" }.joined(separator: ",")), creds=\(iceServers.map { $0.credential.isEmpty ? "EMPTY" : "set(\($0.credential.count))" }.joined(separator: ","))")
         peer = factory.peerConnection(with: configuration, constraints: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil), delegate: self)
         guard let peer else { throw StreamerError.unavailable }
         let source = factory.videoSource(); let camera = RTCCameraVideoCapturer(delegate: source)
@@ -120,7 +121,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
 
     // MARK: - RTCPeerConnectionDelegate
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
-        onDiagnostic?("local candidate: \(candidate.sdpMid ?? "?") \(String(candidate.sdp.prefix(24)))")
+        let typ = candidate.sdp.components(separatedBy: " typ ").last ?? "?"
+        onDiagnostic?("local candidate: \(typ) \(String(candidate.sdp.suffix(40)))")
         onLocalCandidate?(CandidateMessage(sdp: candidate.sdp, sdpMid: candidate.sdpMid ?? "0", sdpMLineIndex: candidate.sdpMLineIndex))
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {

@@ -1,7 +1,7 @@
 import Foundation
 import SocketIO
 
-struct IceServerConfiguration { let urls: [String]; let username: String; let credential: String }
+struct IceServerConfiguration: Codable { let urls: [String]; let username: String; let credential: String }
 struct CandidateMessage { let sdp: String; let sdpMid: String; let sdpMLineIndex: Int32 }
 struct SignalingMessage {
     enum Kind { case offer, answer, candidate }
@@ -79,14 +79,19 @@ final class SignalingClient {
         guard let message = values.first as? [String: Any], let viewerID = message["viewerId"] as? String else { return }
         // Socket.IO Swift 反序列化可能是 NSArray/NSDictionary 桥接，直接 as? [String] 或
         // as? [[String: Any]] 会失败导致 TURN 配置丢失。逐层兼容解析。
-        let rawServers = Self.anyArray(message["iceServers"])
-        let ice = rawServers.compactMap { item -> IceServerConfiguration? in
-            guard let dict = item as? [String: Any] ?? (item as? NSDictionary) as? [String: Any] else { return nil }
-            let urls = Self.stringArray(dict["urls"])
-            guard !urls.isEmpty else { return nil }
-            return IceServerConfiguration(urls: urls,
-                                          username: dict["username"] as? String ?? "",
-                                          credential: dict["credential"] as? String ?? "")
+        // 优先用配对响应持久化下来的配置（JSONSerialization 解析，类型可靠）；
+        // watch:start 里带的作为老版本兜底。
+        var ice = credentials.iceServers ?? []
+        if ice.isEmpty {
+            let rawServers = Self.anyArray(message["iceServers"])
+            ice = rawServers.compactMap { item -> IceServerConfiguration? in
+                guard let dict = item as? [String: Any] ?? (item as? NSDictionary) as? [String: Any] else { return nil }
+                let urls = Self.stringArray(dict["urls"])
+                guard !urls.isEmpty else { return nil }
+                return IceServerConfiguration(urls: urls,
+                                              username: dict["username"] as? String ?? "",
+                                              credential: dict["credential"] as? String ?? "")
+            }
         }
         onDiagnostic?("ICE parsed: \(ice.count) servers, urls=\(ice.map { $0.urls.joined(separator: ",") }.joined(separator: " | "))")
         onWatchStart?(viewerID, ice)

@@ -1,6 +1,9 @@
 import Foundation
 
-struct DeviceCredentials: Codable { let serverURL: URL; let deviceID: String; let deviceSecret: String; let name: String }
+struct DeviceCredentials: Codable {
+    let serverURL: URL; let deviceID: String; let deviceSecret: String; let name: String
+    var iceServers: [IceServerConfiguration]?
+}
 
 final class DeviceStore {
     private let key = "homecam-device-credentials"
@@ -18,7 +21,12 @@ enum PairingAPI {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw PairingError.failed }
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard let device = object?["device"] as? [String: Any], let id = device["id"] as? String, let secret = object?["deviceSecret"] as? String else { throw PairingError.failed }
-        return DeviceCredentials(serverURL: serverURL, deviceID: id, deviceSecret: secret, name: name)
+        // ICE 配置随配对响应下发并持久化，避免依赖 Socket.IO 的 NSArray 桥接
+        let servers = (object?["iceServers"] as? [[String: Any]] ?? []).compactMap { item -> IceServerConfiguration? in
+            guard let urls = item["urls"] as? [String], !urls.isEmpty else { return nil }
+            return IceServerConfiguration(urls: urls, username: item["username"] as? String ?? "", credential: item["credential"] as? String ?? "")
+        }
+        return DeviceCredentials(serverURL: serverURL, deviceID: id, deviceSecret: secret, name: name, iceServers: servers)
     }
 }
 enum PairingError: LocalizedError { case failed; var errorDescription: String? { "配对码无效、已过期，或服务器暂时不可用。" } }

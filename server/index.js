@@ -69,7 +69,7 @@ app.post('/api/devices/pair', (req, res) => {
   const device = { id: id(), name: String(req.body?.name || 'Home camera').slice(0, 50), createdAt: Date.now(), secretHash: digest(secret) };
   db.devices.push(device); save();
   broadcastDevices();
-  res.status(201).json({ device: publicDevice(device), deviceSecret: secret });
+  res.status(201).json({ device: publicDevice(device), deviceSecret: secret, iceServers });
 });
 app.patch('/api/devices/:id', requireUser, (req, res) => {
   const device = db.devices.find((d) => d.id === req.params.id);
