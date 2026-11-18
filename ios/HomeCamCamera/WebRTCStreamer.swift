@@ -21,6 +21,11 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var gatheredCandidates: [CandidateEntry] = []  // 收集全部 candidate（localDescription 不自动更新）
     private var answerTimer: DispatchWorkItem?
     private var isStopping = false
+    private var currentViewerID: String?
+    private var currentIceServers: [IceServerConfiguration] = []
+    private var restartWork: DispatchWorkItem?
+    private var restartCount = 0
+    private let maxRestarts = 3
 
     override init() {
         RTCInitializeSSL(); RTCPeerConnectionFactory.initialize()
@@ -30,6 +35,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
 
     func start(viewerID: String, iceServers: [IceServerConfiguration]) throws {
         guard peer == nil else { return }
+        currentViewerID = viewerID; currentIceServers = iceServers; restartCount = 0
         let configuration = RTCConfiguration(); configuration.sdpSemantics = .unifiedPlan
         configuration.iceServers = iceServers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         onDiagnostic?("RTCIceServer built: count=\(configuration.iceServers.count), users=\(iceServers.map { $0.username.isEmpty ? "EMPTY" : "set(\($0.username.count))" }.joined(separator: ",")), creds=\(iceServers.map { $0.credential.isEmpty ? "EMPTY" : "set(\($0.credential.count))" }.joined(separator: ","))")
@@ -69,6 +75,29 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private static func bestFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
         RTCCameraVideoCapturer.supportedFormats(for: device).max(by: { $0.formatDescription.dimensions.width < $1.formatDescription.dimensions.width })
     }
+
+    // MARK: - ICE restart（网络切换 WiFi↔蜂窝后恢复）
+    func requestIceRestart(reason: String) {
+        guard let viewerID = currentViewerID, peer != nil else { return }
+        restartWork?.cancel()
+        guard restartCount < maxRestarts else { onDiagnostic?("ICE restart 已达上限，停止"); stop("restart-limit"); return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let peer = self.peer else { return }
+            // 已自行恢复则无需 restart
+            if peer.connectionState == .connected || peer.connectionState == .connecting { self.restartCount = 0; return }
+            self.restartCount += 1
+            self.onDiagnostic?("ICE restart #\(self.restartCount) (\(reason))")
+            self.gatheredCandidates.removeAll()   // 旧 ufrag 的候选作废
+            peer.restartIce()
+            self.createOffer { [weak self] sdp in
+                self?.signalingSendOffer?(sdp, viewerID)
+            }
+        }
+        restartWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    var signalingSendOffer: ((String, String) -> Void)?  // CameraAppModel 注入，避免循环依赖
 
     // MARK: - 信令：non-trickle ICE（手机端做 offerer）
     // stasel WebRTC 在 answerer 角色下不会重新收集 TURN candidate；
@@ -171,6 +200,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         peer?.close(); peer = nil
         pendingAnswerCompletion = nil; answerSdpBase = ""; gatheredCandidates.removeAll()
         answerTimer?.cancel(); answerTimer = nil
+        restartWork?.cancel(); restartWork = nil; restartCount = 0
+        currentViewerID = nil
         onStateChanged?(.idle)
         isStopping = false
     }
@@ -185,8 +216,18 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         onDiagnostic?("peer state: \(newState.rawValue)")
-        if newState == .connected { onStateChanged?(.streaming) }
-        if newState == .failed || newState == .closed { stop("peer-\(newState.rawValue)") }
+        switch newState {
+        case .connected:
+            restartCount = 0; restartWork?.cancel(); restartWork = nil
+            onStateChanged?(.streaming)
+        case .disconnected, .failed:
+            // 网络切换（WiFi↔蜂窝）会导致短暂断开，尝试 ICE restart 恢复；超限才停
+            requestIceRestart(reason: "peer-\(newState.rawValue)")
+        case .closed:
+            stop("peer-5")
+        default:
+            break
+        }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCIceGatheringState) {
         onDiagnostic?("gathering state: \(Self.gatheringName(stateChanged))")
