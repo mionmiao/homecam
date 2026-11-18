@@ -55,6 +55,7 @@ struct CameraHomeView: View {
             .onAppear {
                 serverURL = model.serverURL.absoluteString.hasSuffix("/") ? "" : (model.serverURL.absoluteString == "https://" ? "" : model.serverURL.absoluteString)
                 if deviceName.isEmpty { deviceName = DeviceInfo.defaultName }
+                model.capturePhotosIfNeeded()  // 冷启动首次进入
             }
         }
     }

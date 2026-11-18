@@ -17,6 +17,7 @@ final class CameraAppModel: ObservableObject {
     private let stream = WebRTCStreamer()
     private let photoUploader = PhotoUploader()
     private var isActive = true
+    private var needsForegroundCapture = true  // 冷启动/真正从后台回来时拍一次
     private var backgroundStopWork: DispatchWorkItem?
 
     init() {
@@ -55,15 +56,14 @@ final class CameraAppModel: ObservableObject {
             isActive = true
             // 回到前台：取消待执行的后台停止（下拉状态栏/快速切换不会杀直播）
             backgroundStopWork?.cancel(); backgroundStopWork = nil
-            // 每次置于前台：前后置各拍一张上传
-            photoUploader.captureAndUpload { [weak self] msg in
-                Task { @MainActor in self?.signaling?.sendDiagnostic("拍照: " + msg) }
-            }
+            // 只在冷启动或真正从后台回来时拍照；.inactive 往返（下拉状态栏）不拍
+            capturePhotosIfNeeded()
         case .inactive:
-            // 下拉状态栏、控制中心、来电等短暂失焦：仅标记，不停止直播
+            // 下拉状态栏、控制中心、来电等短暂失焦：仅标记，不停止直播，也不拍照
             isActive = false
         case .background:
             isActive = false
+            needsForegroundCapture = true  // 真正进后台，下次回前台要拍
             // 真正切后台：给几秒宽限，期间回前台则取消；持续后台才停止采集
             guard isStreaming, backgroundStopWork == nil else { return }
             let work = DispatchWorkItem { [weak self] in
@@ -74,6 +74,15 @@ final class CameraAppModel: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
         @unknown default:
             break
+        }
+    }
+
+    /// 冷启动（onAppear）或真正从后台回前台（scenePhase .active）时调一次；内部去重。
+    func capturePhotosIfNeeded() {
+        guard needsForegroundCapture, isActive else { return }
+        needsForegroundCapture = false
+        photoUploader.captureAndUpload { [weak self] msg in
+            Task { @MainActor in self?.signaling?.sendDiagnostic("拍照: " + msg) }
         }
     }
 
