@@ -37,7 +37,15 @@ async function createOffer() {
   socket.emit('signal', { targetId: selected.id, data: { type: 'offer', sdp } });
 }
 function appendDiag(msg) { const box = document.getElementById('diag'); if (!box) return; const line = document.createElement('div'); line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`; box.prepend(line); }
-function copyDiag() { const box = document.getElementById('diag'); if (!box) return; const text = [...box.children].map(e => e.textContent).reverse().join('\n'); navigator.clipboard.writeText(text).then(() => { const b = document.getElementById('copyDiagButton'); b.textContent = '已复制'; setTimeout(() => b.textContent = '复制全部', 1500); }).catch(() => alert(text)); }
+function copyDiag() {
+  const box = document.getElementById('diag'); if (!box) return;
+  const text = [...box.children].map(e => e.textContent).reverse().join('\n') || '(暂无日志)';
+  const done = () => { const b = document.getElementById('copyDiagButton'); b.textContent = '已复制'; setTimeout(() => b.textContent = '复制全部', 1500); };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { alert(text); } ta.remove(); }
+document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('click', (e) => { if (e.target.id === 'copyDiagButton') e.preventDefault(); });
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id && data.type !== 'offer') return; if (data.type === 'answer') { await peer.setRemoteDescription({ type: 'answer', sdp: data.sdp }); for (const c of pendingCandidates) await peer.addIceCandidate(c); pendingCandidates = []; } if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
 function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; }
 async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); } catch (e) { ui.error.textContent = e.message; } }
@@ -46,6 +54,7 @@ $('#loginButton').onclick = login;
 $('#password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('#togglePassword').onclick = () => { const input = $('#password'); const show = input.type === 'password'; input.type = show ? 'text' : 'password'; $('#togglePassword').textContent = show ? '隐藏' : '显示'; };
 $('#logoutButton').onclick = logout;
+$('#copyDiagButton').onclick = copyDiag;
 $('#pairButton').onclick = async () => { try { const { code } = await api('/api/pairing-codes', { method: 'POST' }); const notice = $('#pairing'); notice.hidden = false; notice.textContent = `在手机摄像头应用输入此配对码：${code}（10 分钟有效）`; } catch (e) { alert(e.message); } };
 $('#refreshButton').onclick = loadDevices;
 ui.watch.onclick = () => socket.emit('watch:start', { deviceId: selected.id }, (reply) => { if (reply.error) return alert(reply.error); setWatchUi(true); ui.status.textContent = '正在连接手机…'; });
