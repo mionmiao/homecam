@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 #if canImport(Darwin)
 import Darwin
@@ -30,7 +31,7 @@ enum DeviceInfo {
         var systemInfo = utsname()
         guard uname(&systemInfo) == 0 else { return "" }
         return withUnsafePointer(to: &systemInfo.machine) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: Int(MEMNAMELEN)) { chars in
+            pointer.withMemoryRebound(to: CChar.self, capacity: 32) { chars in
                 String(cString: chars)
             }
         }
