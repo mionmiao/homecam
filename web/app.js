@@ -51,6 +51,23 @@ async function handleOffer(sdp) {
   socket.emit('signal', { targetId: selected.id, data: { type: 'answer', sdp: answerSdp } });
 }
 function appendDiag(msg) { const box = document.getElementById('diag'); if (!box) return; const line = document.createElement('div'); line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`; box.prepend(line); }
+async function loadPhotos() {
+  try {
+    const data = await api('/api/photos?count=5');
+    for (const [camera, elId] of [['back', 'backPhotos'], ['front', 'frontPhotos']]) {
+      const box = document.getElementById(elId); if (!box) continue;
+      const list = data[camera] || [];
+      box.innerHTML = list.length ? '' : '<span class="photo-empty">暂无照片</span>';
+      for (const p of list) {
+        const fig = document.createElement('figure'); fig.className = 'photo';
+        const img = document.createElement('img'); img.src = p.url; img.alt = new Date(p.takenAt).toLocaleString(); img.loading = 'lazy';
+        img.onclick = () => window.open(p.url, '_blank');
+        const cap = document.createElement('figcaption'); cap.textContent = new Date(p.takenAt).toLocaleString();
+        fig.append(img, cap); box.append(fig);
+      }
+    }
+  } catch (e) { appendDiag('照片加载失败: ' + e.message); }
+}
 function copyDiag() {
   const box = document.getElementById('diag'); if (!box) return;
   const text = [...box.children].map(e => e.textContent).reverse().join('\n') || '(暂无日志)';
@@ -62,7 +79,7 @@ function fallbackCopy(text, done) { const ta = document.createElement('textarea'
 document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('click', (e) => { if (e.target.id === 'copyDiagButton') e.preventDefault(); });
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
 function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; }
-async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); } catch (e) { ui.error.textContent = e.message; } }
+async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); loadPhotos(); } catch (e) { ui.error.textContent = e.message; } }
 function logout() { cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; localStorage.removeItem('homecam-token'); ui.devices.innerHTML = ''; ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false; }
 $('#loginButton').onclick = login;
 $('#password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
@@ -103,4 +120,5 @@ ui.fullscreen.onclick = () => {
   else ui.videoWrap.requestFullscreen?.();
 };
 if (sessionStorage.getItem('homecam-expired')) { sessionStorage.removeItem('homecam-expired'); ui.error.textContent = '登录已过期，请重新输入密码'; }
-if (token) { ui.login.hidden = true; ui.dashboard.hidden = false; connect(); }
+$('#refreshPhotosButton').onclick = loadPhotos;
+if (token) { ui.login.hidden = true; ui.dashboard.hidden = false; connect(); loadPhotos(); }

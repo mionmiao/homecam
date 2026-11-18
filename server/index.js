@@ -10,6 +10,7 @@ dotenv.config();
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.PORT || 3000);
 const dataDir = path.resolve(root, process.env.DATA_DIR || 'data');
+const photosDir = path.join(dataDir, 'photos');
 const dbFile = path.join(dataDir, 'homecam.json');
 const adminPassword = process.env.ADMIN_PASSWORD;
 const tokenSecret = process.env.TOKEN_SECRET;
@@ -17,6 +18,8 @@ if (!adminPassword || !tokenSecret) throw new Error('ADMIN_PASSWORD and TOKEN_SE
 let iceServers;
 try { iceServers = JSON.parse(process.env.ICE_SERVERS || '[{"urls":["stun:stun.l.google.com:19302"]}]'); } catch { throw new Error('ICE_SERVERS must be valid JSON'); }
 fs.mkdirSync(dataDir, { recursive: true });
+fs.mkdirSync(path.join(photosDir, 'front'), { recursive: true });
+fs.mkdirSync(path.join(photosDir, 'back'), { recursive: true });
 let db = fs.existsSync(dbFile) ? JSON.parse(fs.readFileSync(dbFile, 'utf8')) : { devices: [], pairingCodes: [] };
 const save = () => fs.writeFileSync(dbFile, JSON.stringify(db, null, 2), { mode: 0o600 });
 const id = () => crypto.randomUUID();
@@ -41,8 +44,9 @@ function deviceView(d) {
 function broadcastDevices() { io.to('viewers').emit('devices', db.devices.map(deviceView)); }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(root, 'web')));
+app.use('/photos', express.static(photosDir, { maxAge: 0, index: false }));
 const requireUser = (req, res, next) => {
   const auth = verify(req.headers.authorization?.replace(/^Bearer /, ''));
   if (!auth?.role || auth.role !== 'viewer') return res.status(401).json({ error: 'Unauthorized' });
@@ -55,6 +59,38 @@ app.post('/api/auth/login', (req, res) => {
 });
 app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(deviceView)));
 app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers }));
+// 设备上传照片：raw JPEG body，用 deviceId + deviceSecret 认证；每类只保留最新 50 张
+app.post('/api/photos', express.raw({ type: 'image/jpeg', limit: '10mb' }), (req, res) => {
+  const deviceId = String(req.headers['x-device-id'] || '');
+  const secret = String(req.headers['x-device-secret'] || '');
+  const camera = req.headers['x-camera'] === 'front' ? 'front' : 'back';
+  const device = db.devices.find((d) => d.id === deviceId);
+  if (!device || !secret || digest(secret) !== device.secretHash) return res.status(401).json({ error: 'Unauthorized' });
+  const body = req.body;
+  if (!Buffer.isBuffer(body) || body.length < 100 || body.length > 10 * 1024 * 1024) return res.status(400).json({ error: 'Invalid image' });
+  const dir = path.join(photosDir, camera);
+  fs.mkdirSync(dir, { recursive: true });
+  const name = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.jpg`;
+  fs.writeFileSync(path.join(dir, name), body, { mode: 0o644 });
+  // 轮转：按修改时间倒序，删除第 51 张及以后
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jpg'))
+    .map((f) => ({ f, m: fs.statSync(path.join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.m - a.m);
+  for (const old of files.slice(50)) fs.unlinkSync(path.join(dir, old.f));
+  res.status(201).json({ ok: true, name, camera });
+});
+// 观看端取最近 N 张照片元信息（默认每类 5 张）
+app.get('/api/photos', requireUser, (req, res) => {
+  const count = Math.min(20, Math.max(1, Number(req.query.count) || 5));
+  const list = (camera) => {
+    const dir = path.join(photosDir, camera);
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter((f) => f.endsWith('.jpg'))
+      .map((f) => { const st = fs.statSync(path.join(dir, f)); return { name: f, url: `/photos/${camera}/${f}`, takenAt: st.mtimeMs }; })
+      .sort((a, b) => b.takenAt - a.takenAt).slice(0, count);
+  };
+  res.json({ front: list('front'), back: list('back') });
+});
 app.post('/api/pairing-codes', requireUser, (_req, res) => {
   db.pairingCodes = db.pairingCodes.filter((p) => p.expiresAt > Date.now());
   const code = String(crypto.randomInt(100000, 1000000));

