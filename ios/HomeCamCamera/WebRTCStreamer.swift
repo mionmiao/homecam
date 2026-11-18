@@ -17,7 +17,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var cameraPosition: AVCaptureDevice.Position = .back
     private var pendingAnswerCompletion: ((String) -> Void)?
     private var answerSdpBase = ""                 // setLocalDescription 时的 SDP（不含 candidate）
-    private var gatheredCandidates: [String] = []  // 自己收集的全部 candidate（localDescription 不会自动更新）
+    private struct CandidateEntry { let line: String; let mLineIndex: Int32 }
+    private var gatheredCandidates: [CandidateEntry] = []  // 收集全部 candidate（localDescription 不自动更新）
     private var answerTimer: DispatchWorkItem?
     private var isStopping = false
 
@@ -140,14 +141,20 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         guard let completion = pendingAnswerCompletion else { return }
         pendingAnswerCompletion = nil
         answerTimer?.cancel(); answerTimer = nil
-        var sdp = answerSdpBase
-        // 把收集到的 candidate 插到第一个 media section 的 a= 行里。
-        // 放在 m= 行之前不合法，追加到末尾（SDP 末尾）浏览器也能解析为 session-level candidate。
-        if !gatheredCandidates.isEmpty {
-            if !sdp.hasSuffix("\n") { sdp += "\r\n" }
-            sdp += gatheredCandidates.joined(separator: "\r\n") + "\r\n"
+        // 把每个 candidate 插到它所属的 m= section 内（按 sdpMLineIndex），
+        // 追加到 SDP 末尾属 session-level，Chrome 解析会失败。
+        var lines = answerSdpBase.components(separatedBy: "\r\n").filter { !$0.isEmpty }
+        let mPositions = lines.enumerated().compactMap { $0.element.hasPrefix("m=") ? $0.offset : nil }
+        // 从后往前插入，避免前面的插入改变后面的行号
+        for (section, mPos) in mPositions.enumerated().reversed() {
+            let cands = gatheredCandidates.filter { Int($0.mLineIndex) == section || ($0.mLineIndex < 0 && section == 0) }.map { "a=" + $0.line }
+            if !cands.isEmpty {
+                let sectionEnd = mPositions.first(where: { $0 > mPos }) ?? lines.count
+                lines.insert(contentsOf: cands, at: sectionEnd)
+            }
         }
-        onDiagnostic?("sending answer, sdp chars=\(sdp.count), candidates=\(gatheredCandidates.count), base=\(answerSdpBase.count)")
+        let sdp = lines.joined(separator: "\r\n") + "\r\n"
+        onDiagnostic?("sending sdp, chars=\(sdp.count), candidates=\(gatheredCandidates.count), base=\(answerSdpBase.count), mLines=\(mPositions.count)")
         completion(sdp)
     }
 
@@ -171,7 +178,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         let typ = candidate.sdp.components(separatedBy: " typ ").last ?? "?"
         onDiagnostic?("local candidate: \(typ)")
-        gatheredCandidates.append("a=" + candidate.sdp)
+        gatheredCandidates.append(CandidateEntry(line: candidate.sdp, mLineIndex: candidate.sdpMLineIndex))
         // 每收到一个候选就顺延发送，等 TURN relay/srflx 到齐（stasel 的 gathering 会过早 complete）
         if pendingAnswerCompletion != nil { scheduleAnswerSend(delay: 3) }
     }

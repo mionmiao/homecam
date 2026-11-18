@@ -112,6 +112,7 @@ final class SignalingClient {
     private func handleSignal(_ values: [Any]) {
         guard let envelope = values.first as? [String: Any], let payload = envelope["data"] as? [String: Any], let type = payload["type"] as? String else { return }
         if type == "offer", let sdp = payload["sdp"] as? String { onSignal?(SignalingMessage(kind: .offer, sdp: sdp, candidate: nil)) }
+        if type == "answer", let sdp = payload["sdp"] as? String { onSignal?(SignalingMessage(kind: .answer, sdp: sdp, candidate: nil)) }
         if type == "candidate", let item = payload["candidate"] as? [String: Any], let sdp = item["candidate"] as? String {
             onSignal?(SignalingMessage(kind: .candidate, sdp: nil, candidate: CandidateMessage(sdp: sdp, sdpMid: item["sdpMid"] as? String ?? "0", sdpMLineIndex: Int32(item["sdpMLineIndex"] as? Int ?? 0))))
         }
