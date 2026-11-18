@@ -27,6 +27,7 @@ final class CameraAppModel: ObservableObject {
             self.signaling?.sendState(state == .streaming ? "streaming" : state == .connecting ? "connecting" : "idle")
         }}
         stream.onLocalCandidate = { [weak self] candidate in Task { @MainActor in self?.signaling?.sendCandidate(candidate) } }
+        stream.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }
     }
 
     func pair(serverURL rawURL: String, name: String, code: String) {
@@ -68,6 +69,7 @@ final class CameraAppModel: ObservableObject {
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
         client.onWatchStop = { [weak self] in Task { @MainActor in self?.stream.stop() } }
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
+        client.onSwitchCamera = { [weak self] in Task { @MainActor in self?.stream.switchCamera() } }
         client.onRemoved = { [weak self] in Task { @MainActor in
             guard let self else { return }
             self.stream.stop(); client.disconnect(); self.signaling = nil; self.store.clear()

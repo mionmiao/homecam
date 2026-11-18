@@ -13,6 +13,7 @@ final class SignalingClient {
     var onWatchStart: ((String, [IceServerConfiguration]) -> Void)?
     var onWatchStop: (() -> Void)?; var onSignal: ((SignalingMessage) -> Void)?; var onError: ((String) -> Void)?
     var onRemoved: (() -> Void)?
+    var onSwitchCamera: (() -> Void)?
     private let credentials: DeviceCredentials; private let manager: SocketManager; private let socket: SocketIOClient
     private var viewerID: String?
     private var pendingCandidates: [CandidateMessage] = []
@@ -50,6 +51,7 @@ final class SignalingClient {
         }
         socket.on("signal") { [weak self] data, _ in self?.handleSignal(data) }
         socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
+        socket.on("camera:switch") { [weak self] _, _ in self?.onSwitchCamera?() }
     }
     func connect() { socket.connect() }
     func disconnect() { socket.disconnect() }
@@ -64,6 +66,7 @@ final class SignalingClient {
     }
     func sendStopped() { socket.emit("stream:state", ["state": "idle"]) }
     func sendState(_ state: String) { socket.emit("stream:state", ["state": state]) }
+    func sendDiagnostic(_ message: String) { socket.emit("device:diagnostic", ["deviceId": credentials.deviceID, "message": message]) }
     func sendAnswer(_ sdp: String) { send(data: ["type": "answer", "sdp": sdp]) }
     func sendCandidate(_ candidate: CandidateMessage) {
         guard viewerID != nil else { pendingCandidates.append(candidate); return }

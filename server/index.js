@@ -131,6 +131,14 @@ io.on('connection', (socket) => {
   socket.on('watch:accepted', ({ viewerId }) => {
     if (socket.data.role === 'device' && activeViews.get(socket.data.deviceId) === viewerId) viewerSockets.get(viewerId)?.emit('watch:accepted', { deviceId: socket.data.deviceId });
   });
+  socket.on('device:diagnostic', ({ deviceId, message }) => {
+    if (socket.data.role !== 'device') return;
+    io.to('viewers').emit('device:diagnostic', { deviceId, message: String(message || '').slice(0, 300) });
+  });
+  socket.on('camera:switch', ({ deviceId }) => {
+    if (socket.data.role !== 'viewer' || activeViews.get(deviceId) !== socket.id) return;
+    deviceSockets.get(deviceId)?.emit('camera:switch');
+  });
   socket.on('signal', ({ targetId, data }) => {
     if (!targetId || !data) return;
     const target = socket.data.role === 'device' ? viewerSockets.get(targetId) : deviceSockets.get(targetId);
