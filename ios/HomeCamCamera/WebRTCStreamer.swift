@@ -16,6 +16,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var videoSource: RTCVideoSource?
     private var cameraPosition: AVCaptureDevice.Position = .back
     private var pendingAnswerCompletion: ((String) -> Void)?
+    private var answerSdpBase = ""                 // setLocalDescription 时的 SDP（不含 candidate）
+    private var gatheredCandidates: [String] = []  // 自己收集的全部 candidate（localDescription 不会自动更新）
     private var isStopping = false
 
     override init() {
@@ -84,6 +86,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
                     guard let self else { return }
                     if let error { self.onDiagnostic?("setLocalDescription error: \(error.localizedDescription)"); return }
                     self.onDiagnostic?("local description set, gathering=\(Self.gatheringName(peer.iceGatheringState))")
+                    // localDescription.sdp 不含后续收集的 candidate，需自己组装
+                    self.answerSdpBase = answer.sdp
                     self.pendingAnswerCompletion = completion
                     if peer.iceGatheringState == .complete {
                         self.sendFullAnswer()
@@ -97,10 +101,16 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     }
 
     private func sendFullAnswer() {
-        guard let completion = pendingAnswerCompletion, let peer else { return }
+        guard let completion = pendingAnswerCompletion else { return }
         pendingAnswerCompletion = nil
-        let sdp = peer.localDescription?.sdp ?? ""
-        onDiagnostic?("sending answer, sdp chars=\(sdp.count), candidates=\(sdp.components(separatedBy: "a=candidate").count - 1)")
+        var sdp = answerSdpBase
+        // 把收集到的 candidate 插到第一个 media section 的 a= 行里。
+        // 放在 m= 行之前不合法，追加到末尾（SDP 末尾）浏览器也能解析为 session-level candidate。
+        if !gatheredCandidates.isEmpty {
+            if !sdp.hasSuffix("\n") { sdp += "\r\n" }
+            sdp += gatheredCandidates.joined(separator: "\r\n") + "\r\n"
+        }
+        onDiagnostic?("sending answer, sdp chars=\(sdp.count), candidates=\(gatheredCandidates.count), base=\(answerSdpBase.count)")
         completion(sdp)
     }
 
@@ -114,7 +124,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         isStopping = true
         capturer?.stopCapture(); capturer = nil; videoSource = nil
         peer?.close(); peer = nil
-        pendingAnswerCompletion = nil
+        pendingAnswerCompletion = nil; answerSdpBase = ""; gatheredCandidates.removeAll()
         onStateChanged?(.idle)
         isStopping = false
     }
@@ -122,8 +132,10 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     // MARK: - RTCPeerConnectionDelegate
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         let typ = candidate.sdp.components(separatedBy: " typ ").last ?? "?"
-        onDiagnostic?("local candidate: \(typ) \(String(candidate.sdp.suffix(40)))")
-        onLocalCandidate?(CandidateMessage(sdp: candidate.sdp, sdpMid: candidate.sdpMid ?? "0", sdpMLineIndex: candidate.sdpMLineIndex))
+        onDiagnostic?("local candidate: \(typ)")
+        gatheredCandidates.append("a=" + candidate.sdp)
+        // 若 gathering 已完成（candidate 是延迟到达的），补发一次完整 answer
+        if pendingAnswerCompletion != nil && peerConnection.iceGatheringState == .complete { sendFullAnswer() }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         onDiagnostic?("peer state: \(newState.rawValue)")
