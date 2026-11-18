@@ -18,6 +18,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var pendingAnswerCompletion: ((String) -> Void)?
     private var answerSdpBase = ""                 // setLocalDescription 时的 SDP（不含 candidate）
     private var gatheredCandidates: [String] = []  // 自己收集的全部 candidate（localDescription 不会自动更新）
+    private var answerTimer: DispatchWorkItem?
     private var isStopping = false
 
     override init() {
@@ -89,20 +90,27 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
                     // localDescription.sdp 不含后续收集的 candidate，需自己组装
                     self.answerSdpBase = answer.sdp
                     self.pendingAnswerCompletion = completion
-                    if peer.iceGatheringState == .complete {
-                        self.sendFullAnswer()
-                    } else {
-                        // 兜底：最多等 12 秒，避免 TURN 探测过久卡死
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in self?.sendFullAnswer() }
-                    }
+                    // answer 的 gathering 常被 stasel WebRTC 过早报 complete，TURN candidate
+                    // 还没到齐。统一用可顺延的定时器：新 candidate 到达就再宽限几秒。
+                    self.scheduleAnswerSend(delay: 5)
                 }
             }
         }
     }
 
+    /// 重置发送定时器：最后一次 candidate 后再等 delay 秒才发，保证 TURN candidate 到齐。
+    private func scheduleAnswerSend(delay: Double) {
+        guard pendingAnswerCompletion != nil else { return }
+        answerTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.sendFullAnswer() }
+        answerTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     private func sendFullAnswer() {
         guard let completion = pendingAnswerCompletion else { return }
         pendingAnswerCompletion = nil
+        answerTimer?.cancel(); answerTimer = nil
         var sdp = answerSdpBase
         // 把收集到的 candidate 插到第一个 media section 的 a= 行里。
         // 放在 m= 行之前不合法，追加到末尾（SDP 末尾）浏览器也能解析为 session-level candidate。
@@ -125,6 +133,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         capturer?.stopCapture(); capturer = nil; videoSource = nil
         peer?.close(); peer = nil
         pendingAnswerCompletion = nil; answerSdpBase = ""; gatheredCandidates.removeAll()
+        answerTimer?.cancel(); answerTimer = nil
         onStateChanged?(.idle)
         isStopping = false
     }
@@ -134,8 +143,8 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         let typ = candidate.sdp.components(separatedBy: " typ ").last ?? "?"
         onDiagnostic?("local candidate: \(typ)")
         gatheredCandidates.append("a=" + candidate.sdp)
-        // 若 gathering 已完成（candidate 是延迟到达的），补发一次完整 answer
-        if pendingAnswerCompletion != nil && peerConnection.iceGatheringState == .complete { sendFullAnswer() }
+        // 每收到一个候选就顺延发送，等 TURN relay/srflx 到齐（stasel 的 gathering 会过早 complete）
+        if pendingAnswerCompletion != nil { scheduleAnswerSend(delay: 3) }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         onDiagnostic?("peer state: \(newState.rawValue)")
@@ -144,7 +153,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCIceGatheringState) {
         onDiagnostic?("gathering state: \(Self.gatheringName(stateChanged))")
-        if stateChanged == .complete { sendFullAnswer() }
+        if stateChanged == .complete { scheduleAnswerSend(delay: 3) }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         onDiagnostic?("ice state changed")
