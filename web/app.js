@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
-let token = localStorage.getItem('homecam-token'); let socket; let selected; let peer; let recorder; let chunks = []; let watching = false; let pendingCandidates = [];
-const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton') };
+let token = localStorage.getItem('homecam-token'); let socket; let selected; let peer; let recorder; let chunks = []; let recTimer = null; let recStart = 0; let watching = false; let pendingCandidates = [];
+const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton'), fullscreen: $('#fullscreenButton'), recBadge: $('#recBadge'), recTime: $('#recTime'), videoWrap: $('#videoWrap') };
 const view = { rotation: 0, zoom: 1, mirrored: false, exposure: 0 }; // exposure in EV (stops)
 function applyView() {
   ui.video.style.transform = `rotate(${view.rotation}deg) scale(${view.zoom}) scaleX(${view.mirrored ? -1 : 1})`;
@@ -13,7 +13,7 @@ function resetView() { view.rotation = 0; view.zoom = 1; view.mirrored = false; 
 const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` });
 function expire() { localStorage.removeItem('homecam-token'); sessionStorage.setItem('homecam-expired', '1'); location.reload(); }
 async function api(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...authHeaders(), ...options.headers } }); if (response.status === 401) { expire(); throw new Error('登录已过期'); } if (!response.ok) throw new Error((await response.json()).error || '请求失败'); return response.json(); }
-function setWatchUi(active) { watching = active; ui.watch.disabled = !selected || active; ui.stop.disabled = !active; ui.mute.disabled = !active; ui.record.disabled = !active; ui.switchCamera.disabled = !active; ui.placeholder.hidden = active; }
+function setWatchUi(active) { watching = active; ui.watch.disabled = !selected || active; ui.stop.disabled = !active; ui.mute.disabled = !active; ui.record.disabled = !active; ui.switchCamera.disabled = !active; ui.fullscreen.disabled = !active; ui.placeholder.hidden = active; }
 function statusLabel(device) { return device.status === 'streaming' ? '观看中' : device.status === 'connecting' ? '连接中' : device.status === 'idle' ? '待命' : '离线'; }
 function select(device) { selected = device; document.querySelectorAll('.device').forEach((e) => e.classList.toggle('selected', e.dataset.id === device.id)); ui.status.textContent = `${device.name}：${statusLabel(device)}`; setWatchUi(false); }
 function renderDevices(devices) {
@@ -59,7 +59,7 @@ function copyDiag() {
 function fallbackCopy(text, done) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { alert(text); } ta.remove(); }
 document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('click', (e) => { if (e.target.id === 'copyDiagButton') e.preventDefault(); });
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
-function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; }
+function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; }
 async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); } catch (e) { ui.error.textContent = e.message; } }
 function logout() { cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; localStorage.removeItem('homecam-token'); ui.devices.innerHTML = ''; ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false; }
 $('#loginButton').onclick = login;
@@ -79,6 +79,26 @@ $('#mirrorButton').onclick = () => { view.mirrored = !view.mirrored; applyView()
 $('#resetViewButton').onclick = resetView;
 $('#exposure').oninput = (e) => { view.exposure = +e.target.value; applyView(); };
 ui.mute.onclick = () => { ui.video.muted = !ui.video.muted; ui.mute.textContent = ui.video.muted ? '打开声音' : '静音'; };
-ui.record.onclick = () => { if (recorder?.state === 'recording') return recorder.stop(); chunks = []; recorder = new MediaRecorder(ui.video.srcObject, { mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm' }); recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data); recorder.onstop = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' })); a.download = `homecam-${new Date().toISOString().replaceAll(':', '-')}.webm`; a.click(); URL.revokeObjectURL(a.href); ui.record.textContent = '开始本地录像'; }; recorder.start(5000); ui.record.textContent = '结束并保存录像'; };
+function updateRecTime() { const s = Math.floor((Date.now() - recStart) / 1000); ui.recTime.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
+function stopRecUi() { clearInterval(recTimer); recTimer = null; ui.recBadge.hidden = true; ui.record.textContent = '开始本地录像'; }
+ui.record.onclick = () => {
+  if (recorder?.state === 'recording') return recorder.stop();
+  chunks = [];
+  recorder = new MediaRecorder(ui.video.srcObject, { mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm' });
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+    a.download = `homecam-${new Date().toISOString().replaceAll(':', '-')}.webm`; a.click(); URL.revokeObjectURL(a.href);
+    stopRecUi();
+  };
+  recorder.start(5000);
+  recStart = Date.now(); updateRecTime(); ui.recBadge.hidden = false;
+  recTimer = setInterval(updateRecTime, 1000);
+  ui.record.textContent = '结束并保存录像';
+};
+ui.fullscreen.onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else ui.videoWrap.requestFullscreen?.();
+};
 if (sessionStorage.getItem('homecam-expired')) { sessionStorage.removeItem('homecam-expired'); ui.error.textContent = '登录已过期，请重新输入密码'; }
 if (token) { ui.login.hidden = true; ui.dashboard.hidden = false; connect(); }
