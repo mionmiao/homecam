@@ -16,6 +16,7 @@ final class CameraAppModel: ObservableObject {
     private var signaling: SignalingClient?
     private let stream = WebRTCStreamer()
     private var isActive = true
+    private var backgroundStopWork: DispatchWorkItem?
 
     init() {
         if let credentials = store.load() { configure(credentials) }
@@ -48,11 +49,31 @@ final class CameraAppModel: ObservableObject {
     }
 
     func scenePhaseChanged(_ phase: ScenePhase) {
-        isActive = phase == .active
-        if !isActive { applicationMovedToBackground() }
+        switch phase {
+        case .active:
+            isActive = true
+            // 回到前台：取消待执行的后台停止（下拉状态栏/快速切换不会杀直播）
+            backgroundStopWork?.cancel(); backgroundStopWork = nil
+        case .inactive:
+            // 下拉状态栏、控制中心、来电等短暂失焦：仅标记，不停止直播
+            isActive = false
+        case .background:
+            isActive = false
+            // 真正切后台：给几秒宽限，期间回前台则取消；持续后台才停止采集
+            guard isStreaming, backgroundStopWork == nil else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.isActive else { return }
+                self.applicationMovedToBackground()
+            }
+            backgroundStopWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        @unknown default:
+            break
+        }
     }
 
     func applicationMovedToBackground() {
+        backgroundStopWork?.cancel(); backgroundStopWork = nil
         guard isStreaming else { return }
         stream.stop(); signaling?.sendStopped(); statusText = "已进入后台，直播已停止"
     }
