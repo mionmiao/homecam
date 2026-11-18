@@ -34,6 +34,11 @@ const verify = (token) => {
   try { const value = JSON.parse(Buffer.from(body, 'base64url')); return value.exp > Date.now() ? value : null; } catch { return null; }
 };
 const publicDevice = ({ secretHash, ...device }) => device;
+// 统一设备状态视图：所有下发到观看端的列表都带 online/status，避免状态错乱
+function deviceView(d) {
+  return { ...publicDevice(d), online: deviceSockets.has(d.id), status: activeViews.has(d.id) ? 'streaming' : (deviceSockets.has(d.id) ? 'idle' : 'offline') };
+}
+function broadcastDevices() { io.to('viewers').emit('devices', db.devices.map(deviceView)); }
 
 const app = express();
 app.use(express.json());
@@ -48,7 +53,7 @@ app.post('/api/auth/login', (req, res) => {
   if (attempt.length !== adminPassword.length || !safeEqual(attempt, adminPassword)) return res.status(401).json({ error: 'Incorrect password' });
   res.json({ token: sign({ role: 'viewer' }) });
 });
-app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(publicDevice)));
+app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(deviceView)));
 app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers }));
 app.post('/api/pairing-codes', requireUser, (_req, res) => {
   db.pairingCodes = db.pairingCodes.filter((p) => p.expiresAt > Date.now());
@@ -63,7 +68,7 @@ app.post('/api/devices/pair', (req, res) => {
   const secret = crypto.randomBytes(32).toString('base64url');
   const device = { id: id(), name: String(req.body?.name || 'Home camera').slice(0, 50), createdAt: Date.now(), secretHash: digest(secret) };
   db.devices.push(device); save();
-  io.to('viewers').emit('devices', db.devices.map(publicDevice));
+  broadcastDevices();
   res.status(201).json({ device: publicDevice(device), deviceSecret: secret });
 });
 
@@ -73,6 +78,8 @@ const deviceSockets = new Map();
 const viewerSockets = new Map();
 const activeViews = new Map();
 const deviceStatus = (deviceId, status) => io.to('viewers').emit('device:status', { deviceId, status });
+// status 事件只作为轻量提示；权威状态走 devices 列表广播
+const notify = (deviceId, status) => { deviceStatus(deviceId, status); broadcastDevices(); };
 
 io.use((socket, next) => {
   const auth = verify(socket.handshake.auth?.token);
@@ -88,10 +95,10 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   if (socket.data.role === 'viewer') {
     socket.join('viewers'); viewerSockets.set(socket.id, socket);
-    socket.emit('devices', db.devices.map((d) => ({ ...publicDevice(d), online: deviceSockets.has(d.id), status: activeViews.has(d.id) ? 'streaming' : 'idle' })));
+    socket.emit('devices', db.devices.map(deviceView));
   } else {
     const deviceId = socket.data.deviceId;
-    deviceSockets.set(deviceId, socket); deviceStatus(deviceId, 'idle');
+    deviceSockets.set(deviceId, socket); notify(deviceId, 'idle');
   }
   socket.on('watch:start', ({ deviceId }, callback = () => {}) => {
     if (socket.data.role !== 'viewer') return callback({ error: 'Unauthorized' });
@@ -110,7 +117,7 @@ io.on('connection', (socket) => {
   });
   const stop = (deviceId, viewerId) => {
     if (!deviceId || activeViews.get(deviceId) !== viewerId) return;
-    activeViews.delete(deviceId); deviceSockets.get(deviceId)?.emit('watch:stop'); viewerSockets.get(viewerId)?.emit('watch:stopped', { deviceId }); deviceStatus(deviceId, 'idle');
+    activeViews.delete(deviceId); deviceSockets.get(deviceId)?.emit('watch:stop'); viewerSockets.get(viewerId)?.emit('watch:stopped', { deviceId }); notify(deviceId, 'idle');
   };
   socket.on('watch:stop', ({ deviceId }) => stop(deviceId, socket.id));
   socket.on('stream:state', ({ state }) => {
@@ -119,9 +126,10 @@ io.on('connection', (socket) => {
     // The device stops capture on its own (e.g. iOS enters background). Release the
     // reservation so the viewer is notified and a later watch attempt is not blocked.
     if (state === 'idle') stop(socket.data.deviceId, activeViews.get(socket.data.deviceId));
+    broadcastDevices();
   });
   socket.on('disconnect', () => {
-    if (socket.data.role === 'device') { deviceSockets.delete(socket.data.deviceId); const viewerId = activeViews.get(socket.data.deviceId); stop(socket.data.deviceId, viewerId); deviceStatus(socket.data.deviceId, 'offline'); }
+    if (socket.data.role === 'device') { deviceSockets.delete(socket.data.deviceId); const viewerId = activeViews.get(socket.data.deviceId); stop(socket.data.deviceId, viewerId); notify(socket.data.deviceId, 'offline'); }
     if (socket.data.role === 'viewer') { viewerSockets.delete(socket.id); for (const [deviceId, viewerId] of activeViews) if (viewerId === socket.id) stop(deviceId, viewerId); }
   });
 });

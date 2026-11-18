@@ -9,6 +9,13 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     var onStateChanged: ((StreamState) -> Void)?; var onLocalCandidate: ((CandidateMessage) -> Void)?
     private let factory: RTCPeerConnectionFactory
     private var peer: RTCPeerConnection?; private var capturer: RTCCameraVideoCapturer?; private var videoSource: RTCVideoSource?
+    // The viewer only creates its peer after receiving watch:accepted, so our ICE
+    // candidates are generated too early and must wait until the viewer is ready.
+    private var pendingLocalCandidates: [CandidateMessage] = []   // 本地生成，等 answer 设好再发
+    private var pendingRemoteCandidates: [CandidateMessage] = []  // 远端收到，等 offer 设好再加
+    private var localCandidatesReleased = false
+    private var remoteDescriptionReady = false
+    private var isStopping = false
 
     override init() {
         RTCInitializeSSL(); RTCPeerConnectionFactory.initialize()
@@ -35,15 +42,40 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         let offer = RTCSessionDescription(type: .offer, sdp: sdp)
         peer?.setRemoteDescription(offer) { [weak self] error in
             guard error == nil, let self, let peer = self.peer else { return }
+            self.remoteDescriptionReady = true
+            for c in self.pendingRemoteCandidates { peer.add(RTCIceCandidate(sdp: c.sdp, sdpMLineIndex: c.sdpMLineIndex, sdpMid: c.sdpMid)) }
+            self.pendingRemoteCandidates.removeAll()
             peer.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { answer, error in
                 guard let answer, error == nil else { return }
-                peer.setLocalDescription(answer) { error in if error == nil { completion(answer.sdp) } }
+                peer.setLocalDescription(answer) { [weak self] error in
+                    guard error == nil, let self else { return }
+                    // 本地 candidate 须在 answer 的 localDescription 设定后才发给观看端
+                    self.localCandidatesReleased = true
+                    for c in self.pendingLocalCandidates { self.onLocalCandidate?(c) }
+                    self.pendingLocalCandidates.removeAll()
+                    completion(answer.sdp)
+                }
             }
         }
     }
-    func receive(candidate: CandidateMessage) { peer?.add(RTCIceCandidate(sdp: candidate.sdp, sdpMLineIndex: candidate.sdpMLineIndex, sdpMid: candidate.sdpMid)) }
-    func stop() { capturer?.stopCapture(); capturer = nil; videoSource = nil; peer?.close(); peer = nil; onStateChanged?(.idle) }
-    func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) { onLocalCandidate?(CandidateMessage(sdp: candidate.sdp, sdpMid: candidate.sdpMid ?? "0", sdpMLineIndex: candidate.sdpMLineIndex)) }
+    func receive(candidate: CandidateMessage) {
+        guard remoteDescriptionReady, let peer else { pendingRemoteCandidates.append(candidate); return }
+        peer.add(RTCIceCandidate(sdp: candidate.sdp, sdpMLineIndex: candidate.sdpMLineIndex, sdpMid: candidate.sdpMid))
+    }
+    func stop() {
+        guard !isStopping else { return }
+        isStopping = true
+        capturer?.stopCapture(); capturer = nil; videoSource = nil
+        peer?.close(); peer = nil
+        pendingLocalCandidates.removeAll(); pendingRemoteCandidates.removeAll()
+        localCandidatesReleased = false; remoteDescriptionReady = false
+        onStateChanged?(.idle)
+        isStopping = false
+    }
+    func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        let message = CandidateMessage(sdp: candidate.sdp, sdpMid: candidate.sdpMid ?? "0", sdpMLineIndex: candidate.sdpMLineIndex)
+        if localCandidatesReleased { onLocalCandidate?(message) } else { pendingLocalCandidates.append(message) }
+    }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) { if newState == .connected { onStateChanged?(.streaming) }; if newState == .failed || newState == .closed { stop() } }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {} ; func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {} ; func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {} ; func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {} ; func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {} ; func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {} ; func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {} ; func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
 }
