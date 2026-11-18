@@ -17,10 +17,15 @@ final class PhotoUploader: NSObject, AVCapturePhotoCaptureDelegate {
             isBusy = true
             defer { isBusy = false }
             guard let credentials = store.load() else { return }
+            let burstCount = 5
             for camera in ["back", "front"] {
-                guard let jpeg = await capture(camera: camera) else { onLog?("\(camera) 拍照失败"); continue }
-                let ok = await upload(jpeg: jpeg, camera: camera, credentials: credentials)
-                onLog?(ok ? "\(camera) 照片已上传" : "\(camera) 上传失败")
+                var uploaded = 0
+                for i in 0..<burstCount {
+                    if i > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }  // 每张间隔 0.5s
+                    guard let jpeg = await capture(camera: camera) else { onLog?("\(camera)[\(i+1)] 拍照失败"); continue }
+                    if await upload(jpeg: jpeg, camera: camera, credentials: credentials) { uploaded += 1 }
+                }
+                onLog?("\(camera) 连拍上传 \(uploaded)/\(burstCount)")
             }
         }
     }
