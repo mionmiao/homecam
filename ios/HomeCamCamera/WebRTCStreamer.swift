@@ -75,7 +75,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
             if let error { self.onDiagnostic?("setRemoteDescription error: \(error.localizedDescription)"); return }
             guard let peer = self.peer else { self.onDiagnostic?("peer gone after offer"); return }
             self.onDiagnostic?("remote description set")
-            peer.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { answer, error in
+            peer.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { [weak self] answer, error in
                 guard let self else { return }
                 if let error { self.onDiagnostic?("createAnswer error: \(error.localizedDescription)"); return }
                 guard let answer else { self.onDiagnostic?("createAnswer nil"); return }
@@ -133,11 +133,12 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         if stateChanged == .complete { sendFullAnswer() }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
-        onDiagnostic?("ice state: \(newState.rawValue)")
+        onDiagnostic?("ice state changed")
     }
     private static func gatheringName(_ state: RTCIceGatheringState) -> String {
         switch state { case .new: return "new"; case .gathering: return "gathering"; case .complete: return "complete"; @unknown default: return "?" }
     }
+    func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
