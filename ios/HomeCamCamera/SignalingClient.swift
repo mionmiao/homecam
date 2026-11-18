@@ -68,6 +68,7 @@ final class SignalingClient {
     func sendStopped() { socket.emit("stream:state", ["state": "idle"]) }
     func sendState(_ state: String) { socket.emit("stream:state", ["state": state]) }
     func sendDiagnostic(_ message: String) { socket.emit("device:diagnostic", ["deviceId": credentials.deviceID, "message": message]) }
+    func sendOffer(_ sdp: String) { onDiagnostic?("sending offer, sdp chars=\(sdp.count)"); send(data: ["type": "offer", "sdp": sdp]) }
     func sendAnswer(_ sdp: String) { send(data: ["type": "answer", "sdp": sdp]) }
     func sendCandidate(_ candidate: CandidateMessage) {
         guard viewerID != nil else { pendingCandidates.append(candidate); return }

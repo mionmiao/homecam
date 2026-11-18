@@ -88,7 +88,9 @@ final class CameraAppModel: ObservableObject {
                 guard isActive else { signaling?.sendStopped(); return }
                 try await requestCapturePermissions()
                 try stream.start(viewerID: viewerID, iceServers: iceServers)
+                // 手机做 offerer：先告诉观看端已接受，等 candidate 收齐后发 offer
                 signaling?.acceptWatch(viewerID: viewerID)
+                stream.createOffer { [weak self] sdp in self?.signaling?.sendOffer(sdp) }
             } catch { errorMessage = error.localizedDescription; signaling?.sendStopped() }
         }
     }
@@ -97,7 +99,7 @@ final class CameraAppModel: ObservableObject {
         switch signal.kind {
         case .offer: stream.receiveOffer(signal.sdp ?? "") { [weak self] answer in self?.signaling?.sendAnswer(answer) }
         case .candidate: if let candidate = signal.candidate { stream.receive(candidate: candidate) }
-        case .answer: break
+        case .answer: stream.receiveAnswer(signal.sdp ?? "")
         }
     }
 

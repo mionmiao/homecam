@@ -69,8 +69,37 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         RTCCameraVideoCapturer.supportedFormats(for: device).max(by: { $0.formatDescription.dimensions.width < $1.formatDescription.dimensions.width })
     }
 
-    // MARK: - 信令：non-trickle ICE
-    // 等 ICE 收集完成后再回 answer，candidate 直接内嵌 SDP，避免逐条转发的时序问题。
+    // MARK: - 信令：non-trickle ICE（手机端做 offerer）
+    // stasel WebRTC 在 answerer 角色下不会重新收集 TURN candidate；
+    // 而在创建 peer 后（offerer）gathering 正常产生 srflx/relay。故改为手机发 offer。
+    func createOffer(completion: @escaping (String) -> Void) {
+        guard let peer else { onDiagnostic?("createOffer: no peer"); return }
+        peer.offer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { [weak self] offer, error in
+            guard let self else { return }
+            if let error { self.onDiagnostic?("createOffer error: \(error.localizedDescription)"); return }
+            guard let offer else { self.onDiagnostic?("createOffer nil"); return }
+            peer.setLocalDescription(offer) { [weak self] error in
+                guard let self else { return }
+                if let error { self.onDiagnostic?("setLocalOffer error: \(error.localizedDescription)"); return }
+                self.answerSdpBase = offer.sdp
+                self.pendingAnswerCompletion = completion
+                self.onDiagnostic?("local offer set, gathered=\(self.gatheredCandidates.count)")
+                self.scheduleAnswerSend(delay: 5)
+            }
+        }
+    }
+
+    /// 收到观看端的 answer（手机是 offerer）
+    func receiveAnswer(_ sdp: String) {
+        let answer = RTCSessionDescription(type: .answer, sdp: sdp)
+        peer?.setRemoteDescription(answer) { [weak self] error in
+            guard let self else { return }
+            if let error { self.onDiagnostic?("setRemoteAnswer error: \(error.localizedDescription)"); return }
+            self.onDiagnostic?("remote answer set")
+        }
+    }
+
+    // 保留：answerer 路径（当前不使用，防御性保留）
     func receiveOffer(_ sdp: String, completion: @escaping (String) -> Void) {
         let offer = RTCSessionDescription(type: .offer, sdp: sdp)
         onDiagnostic?("offer received, setting remote description")
