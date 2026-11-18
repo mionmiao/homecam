@@ -3,7 +3,7 @@ import SwiftUI
 struct CameraHomeView: View {
     @EnvironmentObject private var model: CameraAppModel
     @State private var serverURL = ""
-    @State private var deviceName = UIDevice.current.name
+    @State private var deviceName = DeviceInfo.defaultName
     @State private var pairingCode = ""
 
     var body: some View {
@@ -54,7 +54,7 @@ struct CameraHomeView: View {
             .navigationTitle("HomeCam 摄像头")
             .onAppear {
                 serverURL = model.serverURL.absoluteString.hasSuffix("/") ? "" : (model.serverURL.absoluteString == "https://" ? "" : model.serverURL.absoluteString)
-                if deviceName.isEmpty { deviceName = UIDevice.current.name }
+                if deviceName.isEmpty { deviceName = DeviceInfo.defaultName }
             }
         }
     }
