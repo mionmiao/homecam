@@ -163,8 +163,9 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         peer?.add(RTCIceCandidate(sdp: candidate.sdp, sdpMLineIndex: candidate.sdpMLineIndex, sdpMid: candidate.sdpMid))
     }
 
-    func stop() {
+    func stop(_ reason: String = "unknown") {
         guard !isStopping else { return }
+        onDiagnostic?("STOP reason=\(reason)")
         isStopping = true
         capturer?.stopCapture(); capturer = nil; videoSource = nil
         peer?.close(); peer = nil
@@ -185,7 +186,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         onDiagnostic?("peer state: \(newState.rawValue)")
         if newState == .connected { onStateChanged?(.streaming) }
-        if newState == .failed || newState == .closed { stop() }
+        if newState == .failed || newState == .closed { stop("peer-\(newState.rawValue)") }
     }
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCIceGatheringState) {
         onDiagnostic?("gathering state: \(Self.gatheringName(stateChanged))")

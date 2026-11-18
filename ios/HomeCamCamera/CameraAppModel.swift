@@ -44,7 +44,7 @@ final class CameraAppModel: ObservableObject {
     }
 
     func disconnect() {
-        stream.stop(); signaling?.disconnect(); signaling = nil; store.clear()
+        stream.stop("disconnect"); signaling?.disconnect(); signaling = nil; store.clear()
         isPaired = false; statusText = "未配对"; isStreaming = false
     }
 
@@ -75,7 +75,7 @@ final class CameraAppModel: ObservableObject {
     func applicationMovedToBackground() {
         backgroundStopWork?.cancel(); backgroundStopWork = nil
         guard isStreaming else { return }
-        stream.stop(); signaling?.sendStopped(); statusText = "已进入后台，直播已停止"
+        stream.stop("background"); signaling?.sendStopped(); statusText = "已进入后台，直播已停止"
     }
 
     private func configure(_ credentials: DeviceCredentials) {
@@ -88,13 +88,13 @@ final class CameraAppModel: ObservableObject {
         }}
         client.onWatchStart = { [weak self] viewerID, iceServers in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers) } }
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
-        client.onWatchStop = { [weak self] in Task { @MainActor in self?.stream.stop() } }
+        client.onWatchStop = { [weak self] in Task { @MainActor in self?.stream.stop("watch-stop") } }
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
         client.onSwitchCamera = { [weak self] in Task { @MainActor in self?.stream.switchCamera() } }
         client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }
         client.onRemoved = { [weak self] in Task { @MainActor in
             guard let self else { return }
-            self.stream.stop(); client.disconnect(); self.signaling = nil; self.store.clear()
+            self.stream.stop("removed"); client.disconnect(); self.signaling = nil; self.store.clear()
             self.isPaired = false; self.isStreaming = false; self.statusText = "未配对"
             self.errorMessage = "此设备已被观看端删除，请重新配对。"
         }}
