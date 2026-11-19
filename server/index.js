@@ -83,8 +83,12 @@ const webVersion = () => {
   return h.digest('hex').slice(0, 12);
 };
 app.get(['/', '/index.html'], (_req, res) => {
+  const version = webVersion();
   let html = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
-  html = html.replace('</head>', `<meta name="web-version" content="${webVersion()}">\n</head>`);
+  html = html.replace('</head>', `<meta name="web-version" content="${version}">\n</head>`);
+  // 带上版本号，避免浏览器沿用缓存的旧脚本/样式
+  html = html.replace('href="/style.css"', `href="/style.css?v=${version}"`)
+             .replace('src="/app.js"', `src="/app.js?v=${version}"`);
   res.set('Cache-Control', 'no-store').type('html').send(html);
 });
 app.get('/api/web-version', (_req, res) => res.json({ version: webVersion() }));
