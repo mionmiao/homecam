@@ -55,7 +55,7 @@ struct CameraHomeView: View {
                     Section("iPhone 使用说明") {
                         Text("保持此 App 在前台，网页端点击“开始观看”后才会开启采集。进入后台会自动停止直播。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text("版本更新：启动时会自动检查，有新版可一键安装（需已安装 LiveContainer）。")
+                        Text("版本更新：启动时会自动检查，有新版可一键安装。安装后需在多任务界面划掉 LiveContainer 并重开才生效。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
             }
