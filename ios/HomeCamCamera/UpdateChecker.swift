@@ -51,9 +51,9 @@ enum UpdateChecker {
     /// 复制安装链接到剪贴板，由用户在 LiveContainer 的「+」→ Install from URL 手动粘贴安装。
     /// 不再调用 livecontainer://install（它会把安装排队，需要重启 LiveContainer 才生效，容易误导）。
     @discardableResult
-    static func copyInstallLink(_ info: UpdateInfo) -> String {
-        guard URL(string: info.ipaUrl) != nil else { return "下载地址无效" }
-        UIPasteboard.general.string = info.ipaUrl
+    static func copyInstallLink(url: String) -> String {
+        guard URL(string: url) != nil else { return "下载地址无效" }
+        UIPasteboard.general.string = url
         return "安装链接已复制。请打开 LiveContainer → 点「+」→ Install from URL → 粘贴链接安装，装完重启 LiveContainer 后从列表启动本 App"
     }
 }

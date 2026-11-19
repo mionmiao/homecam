@@ -165,8 +165,7 @@ final class CameraAppModel: ObservableObject {
     func installUpdate(_ info: UpdateInfo) {
         // 优先用配对时的 serverURL 拼直链，避免依赖服务端返回的 host
         let link = store.load()?.serverURL.appending(path: "releases/HomeCamCamera.ipa").absoluteString ?? info.ipaUrl
-        var copy = info; copy.ipaUrl = link
-        let message = UpdateChecker.copyInstallLink(copy)
+        let message = UpdateChecker.copyInstallLink(url: link)
         notice = .message(message)
         statusText = message
     }
