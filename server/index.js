@@ -73,6 +73,21 @@ function broadcastDevices() { io.to('viewers').emit('devices', db.devices.map(de
 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
+// 观看端自动更新：计算 web 资源指纹，并在 index.html 注入当前版本，
+// 前端据此比对判断是否有新版本（正在观看时不自动刷新，避免断流）
+const webVersion = () => {
+  const h = crypto.createHash('sha256');
+  for (const f of ['index.html', 'app.js', 'style.css']) {
+    try { h.update(fs.readFileSync(path.join(root, 'web', f))); } catch { /* 文件缺失则跳过 */ }
+  }
+  return h.digest('hex').slice(0, 12);
+};
+app.get(['/', '/index.html'], (_req, res) => {
+  let html = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
+  html = html.replace('</head>', `<meta name="web-version" content="${webVersion()}">\n</head>`);
+  res.set('Cache-Control', 'no-store').type('html').send(html);
+});
+app.get('/api/web-version', (_req, res) => res.json({ version: webVersion() }));
 app.use(express.static(path.join(root, 'web')));
 app.use('/photos', express.static(photosDir, { maxAge: 0, index: false }));
 const requireUser = (req, res, next) => {

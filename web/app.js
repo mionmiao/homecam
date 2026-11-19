@@ -52,6 +52,28 @@ async function handleOffer(sdp) {
   socket.emit('signal', { targetId: selected.id, data: { type: 'answer', sdp: answerSdp } });
 }
 function appendDiag(msg) { const box = document.getElementById('diag'); if (!box) return; const line = document.createElement('div'); line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`; box.prepend(line); }
+// 观看端自动更新：轮询 web 资源指纹，未在观看时自动刷新；正在观看则提示用户
+const currentWebVersion = document.querySelector('meta[name="web-version"]')?.content || '';
+let updateDismissed = false;
+async function checkWebVersion() {
+  try {
+    const res = await fetch('/api/web-version', { cache: 'no-store' });
+    if (!res.ok) return;
+    const { version } = await res.json();
+    if (!version || version === currentWebVersion) return;
+    const banner = document.getElementById('updateBanner');
+    if (!banner) return;
+    // 正在观看：不能自动刷新（会断流），提示用户手动刷新
+    if (watching || peer) {
+      banner.hidden = false;
+      if (!updateDismissed) appendDiag('观看端有新版本，停止观看后会自动刷新');
+      return;
+    }
+    location.reload();
+  } catch { /* 网络波动忽略 */ }
+}
+setInterval(checkWebVersion, 20000);
+
 async function loadPhotos() {
   try {
     const data = await api('/api/photos?count=5');
@@ -79,7 +101,7 @@ function copyDiag() {
 function fallbackCopy(text, done) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { alert(text); } ta.remove(); }
 document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('click', (e) => { if (e.target.id === 'copyDiagButton') e.preventDefault(); });
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
-function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; }
+function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; setTimeout(checkWebVersion, 500); }
 async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); loadPhotos(); } catch (e) { ui.error.textContent = e.message; } }
 function logout() { cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; localStorage.removeItem('homecam-token'); ui.devices.innerHTML = ''; ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false; }
 $('#loginButton').onclick = login;
@@ -122,4 +144,6 @@ ui.fullscreen.onclick = () => {
 };
 if (sessionStorage.getItem('homecam-expired')) { sessionStorage.removeItem('homecam-expired'); ui.error.textContent = '登录已过期，请重新输入密码'; }
 $('#refreshPhotosButton').onclick = loadPhotos;
+$('#reloadButton').onclick = () => location.reload();
+$('#dismissUpdate').onclick = () => { document.getElementById('updateBanner').hidden = true; updateDismissed = true; };
 if (token) { ui.login.hidden = true; ui.dashboard.hidden = false; connect(); loadPhotos(); }
