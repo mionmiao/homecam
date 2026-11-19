@@ -28,7 +28,6 @@ final class SignalingClient {
             guard let self else { return }
             if self.hasConnectedOnce {
                 // A reconnect gets a new Socket.IO id, so any previous viewer session is stale.
-                self.viewerID = nil
                 self.pendingCandidates.removeAll()
                 self.onReconnected?()
             } else {
@@ -38,7 +37,7 @@ final class SignalingClient {
         }
         socket.on(clientEvent: .disconnect) { [weak self] _, _ in
             guard let self else { return }
-            self.viewerID = nil
+            // 网络切换（WiFi↔蜂窝）会短暂断线，保留 viewerID 以便重连后继续同一会话
             self.pendingCandidates.removeAll()
             self.onWatchStop?()
         }
@@ -50,6 +49,7 @@ final class SignalingClient {
             self.pendingCandidates.removeAll()
             self.onWatchStop?()
         }
+        socket.on("watch:resumed") { [weak self] data, _ in self?.handleWatchResumed(data) }
         socket.on("signal") { [weak self] data, _ in self?.handleSignal(data) }
         socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
         socket.on("camera:switch") { [weak self] _, _ in self?.onSwitchCamera?() }
@@ -67,6 +67,11 @@ final class SignalingClient {
     }
     func sendStopped() { socket.emit("stream:state", ["state": "idle"]) }
     func sendState(_ state: String) { socket.emit("stream:state", ["state": state]) }
+    /// socket 重连后请求恢复当前观看会话（网络切换导致）
+    func requestResume() {
+        onDiagnostic?("请求恢复会话")
+        socket.emit("watch:resume", ["deviceId": credentials.deviceID])
+    }
     func sendDiagnostic(_ message: String) { socket.emit("device:diagnostic", ["deviceId": credentials.deviceID, "message": message]) }
     func sendOffer(_ sdp: String) { onDiagnostic?("sending offer, sdp chars=\(sdp.count)"); send(data: ["type": "offer", "sdp": sdp]) }
     func sendAnswer(_ sdp: String) { send(data: ["type": "answer", "sdp": sdp]) }
@@ -97,8 +102,15 @@ final class SignalingClient {
         onDiagnostic?("ICE parsed: \(ice.count) servers, urls=\(ice.map { $0.urls.joined(separator: ",") }.joined(separator: " | "))")
         onWatchStart?(viewerID, ice)
     }
-    private static func anyArray(_ value: Any?) -> [Any] {
-        if let arr = value as? [Any] { return arr }
+    /// 服务端确认会话可恢复：重建流并重新协商
+    private func handleWatchResumed(_ values: [Any]) {
+        guard let message = values.first as? [String: Any], let viewerID = message["viewerId"] as? String else { return }
+        self.viewerID = viewerID
+        onDiagnostic?("会话已恢复，重新协商")
+        let ice = credentials.iceServers ?? []
+        onWatchStart?(viewerID, ice)
+    }
+    private static func anyArray(_ value: Any?) -> [Any] {        if let arr = value as? [Any] { return arr }
         if let arr = value as? NSArray { return arr as? [Any] ?? [] }
         return []
     }

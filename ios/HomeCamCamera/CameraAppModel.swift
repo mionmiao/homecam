@@ -25,6 +25,9 @@ final class CameraAppModel: ObservableObject {
         stream.signalingSendOffer = { [weak self] sdp, _ in
             Task { @MainActor in self?.signaling?.sendOffer(sdp) }
         }
+        stream.signalingRequestResume = { [weak self] in
+            Task { @MainActor in self?.signaling?.requestResume() }
+        }
         stream.onStateChanged = { [weak self] state in Task { @MainActor in
             guard let self else { return }
             self.isStreaming = state == .streaming
@@ -102,6 +105,7 @@ final class CameraAppModel: ObservableObject {
         client.onReconnected = { [weak self] in Task { @MainActor in
             guard let self, self.isPaired else { return }
             self.statusText = self.isStreaming ? "连接已恢复，正在直播" : "连接已恢复，待命中：摄像头和麦克风未启用"
+            // 服务端在设备重连时会主动下发 watch:resumed 触发重新协商，此处无需重复请求
         }}
         client.onWatchStart = { [weak self] viewerID, iceServers in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers) } }
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
@@ -128,6 +132,8 @@ final class CameraAppModel: ObservableObject {
                 // leaving the viewer stuck in a "connecting" state.
                 guard isActive else { signaling?.sendStopped(); return }
                 try await requestCapturePermissions()
+                // 网络切换后重建：先停掉旧 peer（不上报 idle，避免服务端释放会话），再新建重新协商
+                if self.stream.isActive { self.stream.stop("rebuild", notifyState: false) }
                 try stream.start(viewerID: viewerID, iceServers: iceServers)
                 // 手机做 offerer：先告诉观看端已接受，等 candidate 收齐后发 offer
                 signaling?.acceptWatch(viewerID: viewerID)

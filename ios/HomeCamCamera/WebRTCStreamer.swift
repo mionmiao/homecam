@@ -14,7 +14,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var peer: RTCPeerConnection?
     private var capturer: RTCCameraVideoCapturer?
     private var videoSource: RTCVideoSource?
-    private var cameraPosition: AVCaptureDevice.Position = .back
+    private var cameraPosition: AVCaptureDevice.Position = .front   // 默认前置
     private var pendingAnswerCompletion: ((String) -> Void)?
     private var answerSdpBase = ""                 // setLocalDescription 时的 SDP（不含 candidate）
     private struct CandidateEntry { let line: String; let mLineIndex: Int32 }
@@ -26,6 +26,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var restartWork: DispatchWorkItem?
     private var restartCount = 0
     private let maxRestarts = 3
+    var isActive: Bool { peer != nil }
 
     override init() {
         RTCInitializeSSL(); RTCPeerConnectionFactory.initialize()
@@ -76,28 +77,26 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         RTCCameraVideoCapturer.supportedFormats(for: device).max(by: { $0.formatDescription.dimensions.width < $1.formatDescription.dimensions.width })
     }
 
-    // MARK: - ICE restart（网络切换 WiFi↔蜂窝后恢复）
+    // MARK: - 网络切换后的重新协商
+    // stasel WebRTC 的 ICE restart 在 non-trickle 下不可靠（offer 发出后对端不回 answer），
+    // 改为请求服务端恢复会话 → 重建 peer 重新协商（更可靠）。
     func requestIceRestart(reason: String) {
         guard let viewerID = currentViewerID, peer != nil else { return }
         restartWork?.cancel()
-        guard restartCount < maxRestarts else { onDiagnostic?("ICE restart 已达上限，停止"); stop("restart-limit"); return }
+        guard restartCount < maxRestarts else { onDiagnostic?("重连已达上限，停止"); stop("restart-limit"); return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, let peer = self.peer else { return }
-            // 已自行恢复则无需 restart
             if peer.connectionState == .connected || peer.connectionState == .connecting { self.restartCount = 0; return }
             self.restartCount += 1
-            self.onDiagnostic?("ICE restart #\(self.restartCount) (\(reason))")
-            self.gatheredCandidates.removeAll()   // 旧 ufrag 的候选作废
-            peer.restartIce()
-            self.createOffer { [weak self] sdp in
-                self?.signalingSendOffer?(sdp, viewerID)
-            }
+            self.onDiagnostic?("请求重建连接 #\(self.restartCount) (\(reason))")
+            self.signalingRequestResume?()
         }
         restartWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
-    var signalingSendOffer: ((String, String) -> Void)?  // CameraAppModel 注入，避免循环依赖
+    var signalingSendOffer: ((String, String) -> Void)?   // CameraAppModel 注入，避免循环依赖
+    var signalingRequestResume: (() -> Void)?             // 请求服务端恢复会话
 
     // MARK: - 信令：non-trickle ICE（手机端做 offerer）
     // stasel WebRTC 在 answerer 角色下不会重新收集 TURN candidate；
@@ -192,7 +191,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         peer?.add(RTCIceCandidate(sdp: candidate.sdp, sdpMLineIndex: candidate.sdpMLineIndex, sdpMid: candidate.sdpMid))
     }
 
-    func stop(_ reason: String = "unknown") {
+    func stop(_ reason: String = "unknown", notifyState: Bool = true) {
         guard !isStopping else { return }
         onDiagnostic?("STOP reason=\(reason)")
         isStopping = true
@@ -202,7 +201,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         answerTimer?.cancel(); answerTimer = nil
         restartWork?.cancel(); restartWork = nil; restartCount = 0
         currentViewerID = nil
-        onStateChanged?(.idle)
+        if notifyState { onStateChanged?(.idle) }
         isStopping = false
     }
 

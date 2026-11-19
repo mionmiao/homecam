@@ -156,6 +156,12 @@ io.on('connection', (socket) => {
   } else {
     const deviceId = socket.data.deviceId;
     deviceSockets.set(deviceId, socket); notify(deviceId, 'idle');
+    // 重连且会话仍在：主动通知设备重建 peer 并重新协商
+    const activeViewerId = activeViews.get(deviceId);
+    if (activeViewerId) {
+      socket.emit('watch:resumed', { viewerId: activeViewerId, iceServers });
+      viewerSockets.get(activeViewerId)?.emit('watch:resume', { deviceId });
+    }
   }
   socket.on('watch:start', ({ deviceId }, callback = () => {}) => {
     if (socket.data.role !== 'viewer') return callback({ error: 'Unauthorized' });
@@ -188,6 +194,16 @@ io.on('connection', (socket) => {
     activeViews.delete(deviceId); deviceSockets.get(deviceId)?.emit('watch:stop'); viewerSockets.get(viewerId)?.emit('watch:stopped', { deviceId }); notify(deviceId, 'idle');
   };
   socket.on('watch:stop', ({ deviceId }) => stop(deviceId, socket.id));
+  // 设备因网络切换（WiFi↔蜂窝）重连后请求恢复观看会话：把当前 viewerId 回传，
+  // 由设备重建 peer 并重新协商（ICE restart 在非 trickle 下不可靠）。
+  socket.on('watch:resume', ({ deviceId }) => {
+    if (socket.data.role !== 'device') return;
+    const target = deviceId || socket.data.deviceId;
+    const viewerId = activeViews.get(target);
+    if (!viewerId) { socket.emit('watch:stop'); return; }
+    socket.emit('watch:resumed', { viewerId, iceServers });
+    viewerSockets.get(viewerId)?.emit('watch:resume', { deviceId: target });
+  });
   socket.on('stream:state', ({ state }) => {
     if (socket.data.role !== 'device') return;
     deviceStatus(socket.data.deviceId, state);
@@ -197,7 +213,21 @@ io.on('connection', (socket) => {
     broadcastDevices();
   });
   socket.on('disconnect', () => {
-    if (socket.data.role === 'device') { deviceSockets.delete(socket.data.deviceId); const viewerId = activeViews.get(socket.data.deviceId); stop(socket.data.deviceId, viewerId); notify(socket.data.deviceId, 'offline'); }
+    if (socket.data.role === 'device') {
+      // 网络切换（WiFi↔蜂窝）会短暂断线：延迟释放会话，期间重连则保留
+      const deviceId = socket.data.deviceId;
+      deviceSockets.delete(deviceId);
+      const viewerId = activeViews.get(deviceId);
+      if (viewerId) {
+        setTimeout(() => {
+          // 期间已重连（deviceSockets 恢复）则不释放
+          if (deviceSockets.has(deviceId)) return;
+          stop(deviceId, viewerId); notify(deviceId, 'offline');
+        }, 15000);
+      } else {
+        notify(deviceId, 'offline');
+      }
+    }
     if (socket.data.role === 'viewer') { viewerSockets.delete(socket.id); for (const [deviceId, viewerId] of activeViews) if (viewerId === socket.id) stop(deviceId, viewerId); }
   });
 });
