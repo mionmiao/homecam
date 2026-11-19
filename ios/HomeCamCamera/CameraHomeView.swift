@@ -46,7 +46,7 @@ struct CameraHomeView: View {
                     Section("已配对设备") {
                         Text(model.deviceName)
                         Text(model.serverURL.absoluteString).font(.footnote).foregroundStyle(.secondary)
-                        Button("刷新运行时配置") { model.refreshConfig() }
+                        Button("刷新运行时配置") { model.refreshConfig(manual: true) }
                         Button("检查更新") { model.checkForUpdate(manual: true) }
                         Button("停止待命", role: .destructive) { model.disconnect() }
                     }
@@ -58,14 +58,24 @@ struct CameraHomeView: View {
                 }
             }
             .navigationTitle("HomeCam 摄像头")
-            .alert("发现新版本", isPresented: Binding(
-                get: { model.pendingUpdate != nil },
-                set: { if !$0 { model.pendingUpdate = nil } }
-            ), presenting: model.pendingUpdate) { info in
-                Button("立即更新") { model.installUpdate(info) }
-                Button("稍后", role: .cancel) { model.pendingUpdate = nil }
-            } message: { info in
-                Text("当前 build \(UpdateChecker.localBuild) → 最新 build \(info.build)\(info.version.isEmpty ? "" : "（\(info.version)）")\n\n安装会退出当前 App，装完后从 LiveContainer 重新打开即可。\n\n\(info.notes)")
+            .alert("HomeCam", isPresented: Binding(
+                get: { model.notice != nil },
+                set: { if !$0 { model.notice = nil } }
+            ), presenting: model.notice) { notice in
+                switch notice {
+                case .update(let info):
+                    Button("立即更新") { model.installUpdate(info) }
+                    Button("稍后", role: .cancel) { model.notice = nil }
+                case .message:
+                    Button("好") { model.notice = nil }
+                }
+            } message: { notice in
+                switch notice {
+                case .update(let info):
+                    Text("当前 build \(UpdateChecker.localBuild) → 最新 build \(info.build)\(info.version.isEmpty ? "" : "（\(info.version)）")\n\n安装会退出当前 App，装完后从 LiveContainer 重新打开即可。\n\n\(info.notes)")
+                case .message(let text):
+                    Text(text)
+                }
             }
             .onAppear {
                 serverURL = model.serverURL.absoluteString.hasSuffix("/") ? "" : (model.serverURL.absoluteString == "https://" ? "" : model.serverURL.absoluteString)

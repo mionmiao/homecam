@@ -14,10 +14,10 @@ final class CameraAppModel: ObservableObject {
     @Published private(set) var serverURL = URL(string: "https://")!
     /// 运行时配置状态摘要（用于界面显示与排障）
     @Published private(set) var configSummary: String = ""
-    /// 待处理的更新（有新版时弹出提示）
-    @Published var pendingUpdate: UpdateInfo?
     /// 当前安装的构建号（常驻显示，便于确认版本）
     @Published private(set) var appBuildText: String = "build \(UpdateChecker.localBuild)"
+    /// 弹窗提示（更新或普通消息）
+    @Published var notice: AppNotice?
 
     private let store = DeviceStore()
     private var signaling: SignalingClient?
@@ -60,7 +60,7 @@ final class CameraAppModel: ObservableObject {
             // 直播已停止：把之前推迟的更新提示弹出来
             if state == .idle, let deferred = self.updateDeferred {
                 self.updateDeferred = nil
-                self.pendingUpdate = deferred
+                self.notice = .update(deferred)
             }
             // 把采集端状态实时上报，观看端可据此判断卡在哪一步
             self.signaling?.sendState(state == .streaming ? "streaming" : state == .connecting ? "connecting" : "idle")
@@ -138,15 +138,19 @@ final class CameraAppModel: ObservableObject {
 
     /// 检查 App 更新（构建号高于本地时提示）
     func checkForUpdate(manual: Bool = false) {
-        guard let url = store.load()?.serverURL else { return }
+        guard let url = store.load()?.serverURL else {
+            if manual { notice = .message("尚未配对，无法检查更新") }
+            return
+        }
         UpdateChecker.check(serverURL: url) { [weak self] info in
             Task { @MainActor in
                 guard let self else { return }
                 if let info {
                     // 已在直播时推迟到停止后再提示，避免打断观看
-                    if self.isStreaming { self.updateDeferred = info } else { self.pendingUpdate = info }
+                    if self.isStreaming { self.updateDeferred = info } else { self.notice = .update(info) }
                     self.signaling?.sendDiagnostic("发现新版本 build=\(info.build)（本地 \(UpdateChecker.localBuild)）")
                 } else if manual {
+                    self.notice = .message("已是最新版本（当前 build \(UpdateChecker.localBuild)）")
                     self.signaling?.sendDiagnostic("已是最新版本（build \(UpdateChecker.localBuild)）")
                 }
             }
@@ -155,16 +159,23 @@ final class CameraAppModel: ObservableObject {
 
     /// 安装更新（唤起 LiveContainer）
     func installUpdate(_ info: UpdateInfo) {
-        statusText = UpdateChecker.install(info)
+        let message = UpdateChecker.install(info)
+        notice = .message(message)
+        statusText = message
     }
 
     /// 手动刷新运行时配置（用户可用来验证热更新是否生效）
-    func refreshConfig() {        guard let url = store.load()?.serverURL else { return }
+    func refreshConfig(manual: Bool = false) {
+        guard let url = store.load()?.serverURL else {
+            if manual { notice = .message("尚未配对，无法刷新配置") }
+            return
+        }
         RuntimeConfig.shared.refresh(from: url) { [weak self] message in
             Task { @MainActor in
                 guard let self else { return }
                 self.configSummary = message
                 self.signaling?.sendDiagnostic("运行时配置: " + message)
+                if manual { self.notice = .message(message) }
             }
         }
     }

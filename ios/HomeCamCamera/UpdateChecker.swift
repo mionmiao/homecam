@@ -10,6 +10,12 @@ struct UpdateInfo: Identifiable {
     let ipaUrl: String
 }
 
+/// App 内提示类型：更新弹窗或普通消息
+enum AppNotice {
+    case update(UpdateInfo)
+    case message(String)
+}
+
 /// App 更新检查：启动时与回前台时向服务端询问最新构建，
 /// 若构建号高于本地则提示更新，并可通过 LiveContainer 一键安装（livecontainer://install?url=）。
 enum UpdateChecker {
