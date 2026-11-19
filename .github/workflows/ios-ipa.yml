@@ -20,7 +20,14 @@ jobs:
 
       - name: Generate Xcode project
         working-directory: ios
-        run: xcodegen generate --spec project.yml
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          xcodegen generate --spec project.yml
+          # XcodeGen 会重写 Info.plist，这里确认我们声明的键确实写进去了
+          grep -q "CFBundleVersion" HomeCamCamera/Info.plist
+          grep -q "NSCameraUsageDescription" HomeCamCamera/Info.plist
+          grep -q "livecontainer" HomeCamCamera/Info.plist
 
       - name: Resolve Swift Package dependencies
         working-directory: ios
@@ -55,6 +62,20 @@ jobs:
           cp -R "$APP" "$STAGE/Payload/"
           ditto -c -k --sequesterRsrc --keepParent "$STAGE/Payload" "$RUNNER_TEMP/HomeCamCamera.ipa"
           shasum -a 256 "$RUNNER_TEMP/HomeCamCamera.ipa" | tee "$RUNNER_TEMP/HomeCamCamera.ipa.sha256"
+
+      - name: Verify bundle metadata
+        run: |
+          set -euo pipefail
+          APP=$(find "$RUNNER_TEMP/HomeCamCamera.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)
+          VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          SHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          CAM=$(/usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$APP/Info.plist")
+          SCHEME=$(/usr/libexec/PlistBuddy -c "Print :LSApplicationQueriesSchemes:0" "$APP/Info.plist")
+          echo "CFBundleVersion=$VER  CFBundleShortVersionString=$SHORT  scheme=$SCHEME"
+          test "$VER" = "${{ github.run_number }}"
+          test "$SHORT" = "1.0.${{ github.run_number }}"
+          test "$SCHEME" = "livecontainer"
+          test -n "$CAM"
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
