@@ -70,6 +70,7 @@ jobs:
             此包不含任何签名或私钥；不需要付费 Apple Developer 账号。
 
             构建号 build=${{ github.run_number }} 版本 1.0.${{ github.run_number }}
+            更新说明：${{ github.event.head_commit.message }}
           make_latest: true
           files: |
             ${{ runner.temp }}/HomeCamCamera.ipa

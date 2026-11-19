@@ -82,21 +82,23 @@ final class SignalingClient {
     func disconnect() { socket.disconnect() }
     func acceptWatch(viewerID: String) {
         self.viewerID = viewerID
-        socket.emit("watch:accepted", ["viewerId": viewerID])
+        emit("watch:accepted", ["viewerId": viewerID])
         // ICE gathering starts as soon as the peer connection is created, which can be
         // before acceptWatch sets viewerID. Flush anything collected in the meantime.
         let buffered = pendingCandidates
         pendingCandidates.removeAll()
         for candidate in buffered { sendCandidate(candidate) }
     }
-    func sendStopped() { socket.emit("stream:state", ["state": "idle"]) }
-    func sendState(_ state: String) { socket.emit("stream:state", ["state": state]) }
+    func sendStopped() { emit("stream:state", ["state": "idle"]) }
+    func sendState(_ state: String) { emit("stream:state", ["state": state]) }
+    func sendDiagnostic(_ message: String) {
+        emit("device:diagnostic", ["deviceId": credentials.deviceID, "message": message])
+    }
     /// socket 重连后请求恢复当前观看会话（网络切换导致）
     func requestResume() {
         onDiagnostic?("请求恢复会话")
-        socket.emit("watch:resume", ["deviceId": credentials.deviceID])
+        emit("watch:resume", ["deviceId": credentials.deviceID])
     }
-    func sendDiagnostic(_ message: String) { socket.emit("device:diagnostic", ["deviceId": credentials.deviceID, "message": message]) }
     func sendOffer(_ sdp: String) { onDiagnostic?("sending offer, sdp chars=\(sdp.count)"); send(data: ["type": "offer", "sdp": sdp]) }
     func sendAnswer(_ sdp: String) { send(data: ["type": "answer", "sdp": sdp]) }
     func sendCandidate(_ candidate: CandidateMessage) {
@@ -104,7 +106,12 @@ final class SignalingClient {
         send(data: ["type": "candidate", "candidate": ["sdpMid": candidate.sdpMid, "sdpMLineIndex": candidate.sdpMLineIndex, "candidate": candidate.sdp]])
     }
 
-    private func send(data: [String: Any]) { guard let viewerID else { return }; socket.emit("signal", ["targetId": viewerID, "data": data]) }
+    /// 未连接时 emit 会抛错，统一拦截
+    private func emit(_ event: String, _ data: [String: Any]) {
+        guard socket.status == .connected else { return }
+        socket.emit(event, data)
+    }
+    private func send(data: [String: Any]) { guard let viewerID else { return }; emit("signal", ["targetId": viewerID, "data": data]) }
     private func handleWatchStart(_ values: [Any]) {
         guard let message = values.first as? [String: Any], let viewerID = message["viewerId"] as? String else { return }
         // Socket.IO Swift 反序列化可能是 NSArray/NSDictionary 桥接，直接 as? [String] 或
