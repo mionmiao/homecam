@@ -48,22 +48,12 @@ enum UpdateChecker {
         }.resume()
     }
 
-    /// 唤起 LiveContainer 安装新包；未安装 LiveContainer 时降级为用 Safari 打开下载链接
-    /// 返回给用户看的提示文案
+    /// 复制安装链接到剪贴板，由用户在 LiveContainer 的「+」→ Install from URL 手动粘贴安装。
+    /// 不再调用 livecontainer://install（它会把安装排队，需要重启 LiveContainer 才生效，容易误导）。
     @discardableResult
-    static func install(_ info: UpdateInfo) -> String {
-        guard let ipa = URL(string: info.ipaUrl) else { return "下载地址无效" }
-        var components = URLComponents()
-        components.scheme = "livecontainer"
-        components.host = "install"
-        components.queryItems = [URLQueryItem(name: "url", value: ipa.absoluteString)]
-        if let installURL = components.url, UIApplication.shared.canOpenURL(installURL) {
-            UIApplication.shared.open(installURL)
-            // LiveContainer 会把安装任务排队，提示重启 LiveContainer——必须完全退出
-            // LiveContainer 本身（多任务界面向上划掉它），只重启本 App 无效。
-            return "已通知 LiveContainer 下载新版。请在多任务界面把 LiveContainer 整个划掉，再重新打开它完成安装；安装后从 LiveContainer 启动本 App"
-        }
-        UIApplication.shared.open(ipa)
-        return "未检测到 LiveContainer，已在浏览器打开下载链接；请用 LiveContainer 的「+」导入"
+    static func copyInstallLink(_ info: UpdateInfo) -> String {
+        guard URL(string: info.ipaUrl) != nil else { return "下载地址无效" }
+        UIPasteboard.general.string = info.ipaUrl
+        return "安装链接已复制。请打开 LiveContainer → 点「+」→ Install from URL → 粘贴链接安装，装完重启 LiveContainer 后从列表启动本 App"
     }
 }

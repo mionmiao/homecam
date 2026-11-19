@@ -55,7 +55,7 @@ struct CameraHomeView: View {
                     Section("iPhone 使用说明") {
                         Text("保持此 App 在前台，网页端点击“开始观看”后才会开启采集。进入后台会自动停止直播。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text("版本更新：启动时会自动检查，有新版可一键安装。安装后需在多任务界面划掉 LiveContainer 并重开才生效。")
+                        Text("版本更新：启动时自动检查，有新版点「复制安装链接」，再到 LiveContainer 里 Install from URL 粘贴安装。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
             }
@@ -66,7 +66,7 @@ struct CameraHomeView: View {
             ), presenting: model.notice) { notice in
                 switch notice {
                 case .update(let info):
-                    Button("立即更新") { model.installUpdate(info) }
+                    Button("复制安装链接") { model.installUpdate(info) }
                     Button("稍后", role: .cancel) { model.deferUpdate(info) }
                 case .message:
                     Button("好") { model.notice = nil }
@@ -74,7 +74,7 @@ struct CameraHomeView: View {
             } message: { notice in
                 switch notice {
                 case .update(let info):
-                    Text("当前 build \(UpdateChecker.localBuild) → 最新 build \(info.build)\(info.version.isEmpty ? "" : "（\(info.version)）")\n\n更新需要：点「立即更新」→ LiveContainer 下载新版并提示重启 → 在多任务界面把 LiveContainer 整个划掉 → 重新打开 LiveContainer 完成安装 → 再从这里启动 App。\n\n\(info.hint.isEmpty ? "" : info.hint + "\n\n")\(info.notes)")
+                    Text("当前 build \(UpdateChecker.localBuild) → 最新 build \(info.build)\(info.version.isEmpty ? "" : "（\(info.version)）")\n\n点「复制安装链接」后，打开 LiveContainer → 点「+」→ Install from URL → 粘贴链接安装。装完需重启 LiveContainer，再从列表启动本 App。\n\n\(info.hint.isEmpty ? "" : info.hint + "\n\n")\(info.notes)")
                 case .message(let text):
                     Text(text)
                 }
