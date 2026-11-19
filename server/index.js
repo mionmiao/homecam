@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import express from 'express';
@@ -77,6 +78,18 @@ const parseBuild = (body) => {
   const v = /1\.0\.(\d+)/.exec(body || '');
   return v ? Number(v[1]) : 0;
 };
+// 从 IPA 内部读取真实 CFBundleVersion（比 release body 更可信，避免 CDN 返回旧包）
+function readBundleVersion(ipaPath) {
+  try {
+    const script = [
+      'import zipfile,plistlib,sys',
+      'z=zipfile.ZipFile(sys.argv[1])',
+      'n=[x for x in z.namelist() if x.endswith(".app/Info.plist")][0]',
+      'print(plistlib.loads(z.read(n)).get("CFBundleVersion",""))'
+    ].join('\n');
+    return execFileSync('python3', ['-c', script, ipaPath], { timeout: 20000 }).toString().trim();
+  } catch { return ''; }
+}
 async function syncLatestRelease() {
   try {
     const headers = { 'User-Agent': 'homecam', 'Accept': 'application/vnd.github+json' };
@@ -90,8 +103,26 @@ async function syncLatestRelease() {
     const ipaRes = await fetch(asset.browser_download_url, { headers });
     if (!ipaRes.ok) { console.log('[release] download failed', ipaRes.status); return; }
     const buf = Buffer.from(await ipaRes.arrayBuffer());
+    // GitHub CDN 可能短暂返回上一次的旧文件，用 release 里的 sha256 校验，避免发布错误版本号
+    let expected = '';
+    const shaAsset = (rel.assets || []).find((a) => a.name === 'HomeCamCamera.ipa.sha256');
+    if (shaAsset) {
+      try {
+        const shaRes = await fetch(shaAsset.browser_download_url, { headers });
+        if (shaRes.ok) expected = (await shaRes.text()).trim().split(/\s+/)[0];
+      } catch { /* 校验文件拿不到就跳过 */ }
+    }
+    const actual = digest(buf);
+    if (expected && expected !== actual) {
+      console.log(`[release] checksum mismatch (cdn stale?), keep previous release; retry in 60s`);
+      return;
+    }
     fs.writeFileSync(path.join(releasesDir, 'HomeCamCamera.ipa'), buf, { mode: 0o644 });
     const body = rel.body || '';
+    // 以 IPA 内部真实的 CFBundleVersion 为准，body 里的 build= 仅作兜底
+    const realBuild = readBundleVersion(path.join(releasesDir, 'HomeCamCamera.ipa'));
+    let build = realBuild ? Number(realBuild) : 0;
+    if (!build) build = parseBuild(body);
     // 只取「更新说明：」那一行作为弹窗文案，其余是发布流程说明，不适合展示给用户
     const noteMatch = /更新说明：(.+)/.exec(body);
     let notes = noteMatch ? noteMatch[1].trim().split('\n')[0].slice(0, 120) : '';
