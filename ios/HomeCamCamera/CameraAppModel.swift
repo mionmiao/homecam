@@ -113,6 +113,13 @@ final class CameraAppModel: ObservableObject {
             guard let self, self.isStreaming else { return }  // 已停止时不再 stop，避免 idle 上报死循环
             self.stream.stop("watch-stop")
         }}
+        client.onSocketLost = { [weak self] in Task { @MainActor in
+            // 网络断开（切换 WiFi/蜂窝）：停掉旧 peer 但不上报 idle，保留会话等待重连恢复
+            guard let self, self.isStreaming else { return }
+            self.stream.stop("socket-lost", notifyState: false)
+            self.isStreaming = false
+            self.statusText = "网络中断，正在重连…"
+        }}
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
         client.onSwitchCamera = { [weak self] in Task { @MainActor in self?.stream.switchCamera() } }
         client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }

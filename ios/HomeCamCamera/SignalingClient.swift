@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import SocketIO
 
 struct IceServerConfiguration: Codable { let urls: [String]; let username: String; let credential: String }
@@ -12,6 +13,7 @@ final class SignalingClient {
     var onConnected: (() -> Void)?; var onReconnected: (() -> Void)?
     var onWatchStart: ((String, [IceServerConfiguration]) -> Void)?
     var onWatchStop: (() -> Void)?; var onSignal: ((SignalingMessage) -> Void)?; var onError: ((String) -> Void)?
+    var onSocketLost: (() -> Void)?   // socket 断开（网络切换），与"服务端要求停止"区分
     var onRemoved: (() -> Void)?
     var onSwitchCamera: (() -> Void)?
     var onDiagnostic: ((String) -> Void)?
@@ -19,10 +21,14 @@ final class SignalingClient {
     private var viewerID: String?
     private var pendingCandidates: [CandidateMessage] = []
     private var hasConnectedOnce = false
+    private let pathMonitor = NWPathMonitor()
+    private let monitorQueue = DispatchQueue(label: "homecam.net.monitor")
+    private var lastInterfaces: Set<String> = []
 
     init(credentials: DeviceCredentials) {
         self.credentials = credentials
-        manager = SocketManager(socketURL: credentials.serverURL, config: [.log(false), .compress, .connectParams(["deviceId": credentials.deviceID, "deviceSecret": credentials.deviceSecret])])
+        manager = SocketManager(socketURL: credentials.serverURL, config: [.log(false), .compress, .connectParams(["deviceId": credentials.deviceID, "deviceSecret": credentials.deviceSecret]),
+                                                               .reconnects(true), .reconnectAttempts(-1), .reconnectWait(1), .reconnectWaitMax(3)])
         socket = manager.defaultSocket
         socket.on(clientEvent: .connect) { [weak self] _, _ in
             guard let self else { return }
@@ -37,9 +43,10 @@ final class SignalingClient {
         }
         socket.on(clientEvent: .disconnect) { [weak self] _, _ in
             guard let self else { return }
-            // 网络切换（WiFi↔蜂窝）会短暂断线，保留 viewerID 以便重连后继续同一会话
+            // 网络切换（WiFi↔蜂窝）会短暂断线：保留 viewerID 与会话，等重连后恢复。
+            // 这里不能走 onWatchStop，否则会上报 idle 让服务端释放会话。
             self.pendingCandidates.removeAll()
-            self.onWatchStop?()
+            self.onSocketLost?()
         }
         socket.on(clientEvent: .error) { [weak self] data, _ in self?.onError?(data.first.map { "连接错误：\($0)" } ?? "无法连接服务器") }
         socket.on("watch:start") { [weak self] data, _ in self?.handleWatchStart(data) }
@@ -53,6 +60,23 @@ final class SignalingClient {
         socket.on("signal") { [weak self] data, _ in self?.handleSignal(data) }
         socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
         socket.on("camera:switch") { [weak self] _, _ in self?.onSwitchCamera?() }
+        // 网络接口变化（WiFi↔蜂窝）时立即重连信令，不等 Socket.IO 心跳超时（约 45 秒）
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let interfaces = Set(path.availableInterfaces.map(\.name))
+            let changed = !self.lastInterfaces.isEmpty && interfaces != self.lastInterfaces
+            self.lastInterfaces = interfaces
+            guard changed else { return }
+            DispatchQueue.main.async { self.forceReconnect() }
+        }
+        pathMonitor.start(queue: monitorQueue)
+    }
+    /// 强制断开并重连（网络接口已变，旧的 TCP 连接多半已失效）
+    private func forceReconnect() {
+        guard socket.status == .connected || socket.status == .connecting else { return }
+        onDiagnostic?("网络接口变化，重连信令")
+        socket.disconnect()
+        socket.connect()
     }
     func connect() { socket.connect() }
     func disconnect() { socket.disconnect() }

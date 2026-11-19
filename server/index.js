@@ -156,9 +156,11 @@ io.on('connection', (socket) => {
   } else {
     const deviceId = socket.data.deviceId;
     deviceSockets.set(deviceId, socket); notify(deviceId, 'idle');
+    console.log(`[device] connected ${deviceId} activeViews=${activeViews.has(deviceId)}`);
     // 重连且会话仍在：主动通知设备重建 peer 并重新协商
     const activeViewerId = activeViews.get(deviceId);
     if (activeViewerId) {
+      console.log(`[device] ${deviceId} resumed with viewer ${activeViewerId}`);
       socket.emit('watch:resumed', { viewerId: activeViewerId, iceServers });
       viewerSockets.get(activeViewerId)?.emit('watch:resume', { deviceId });
     }
@@ -200,7 +202,8 @@ io.on('connection', (socket) => {
     if (socket.data.role !== 'device') return;
     const target = deviceId || socket.data.deviceId;
     const viewerId = activeViews.get(target);
-    if (!viewerId) { socket.emit('watch:stop'); return; }
+    if (!viewerId) { console.log(`[device] ${target} resume requested but no active session`); socket.emit('watch:stop'); return; }
+    console.log(`[device] ${target} resume -> viewer ${viewerId}`);
     socket.emit('watch:resumed', { viewerId, iceServers });
     viewerSockets.get(viewerId)?.emit('watch:resume', { deviceId: target });
   });
@@ -219,11 +222,13 @@ io.on('connection', (socket) => {
       deviceSockets.delete(deviceId);
       const viewerId = activeViews.get(deviceId);
       if (viewerId) {
+        console.log(`[device] ${deviceId} disconnected, hold session ${viewerId} for 60s`);
         setTimeout(() => {
           // 期间已重连（deviceSockets 恢复）则不释放
-          if (deviceSockets.has(deviceId)) return;
+          if (deviceSockets.has(deviceId)) { console.log(`[device] ${deviceId} reconnected in time, session kept`); return; }
+          console.log(`[device] ${deviceId} session expired, releasing`);
           stop(deviceId, viewerId); notify(deviceId, 'offline');
-        }, 15000);
+        }, 60000);
       } else {
         notify(deviceId, 'offline');
       }
