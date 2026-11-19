@@ -55,7 +55,7 @@ struct CameraHomeView: View {
                     Section("iPhone 使用说明") {
                         Text("保持此 App 在前台，网页端点击“开始观看”后才会开启采集。进入后台会自动停止直播，锁屏超过 10 秒解锁后会自动拍照上传。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text("版本更新：启动时自动检查，有新版点「复制安装链接」，再到 LiveContainer 里 Install from URL 粘贴安装。")
+                        Text("版本更新：点「检查更新」查看是否有新版。有新版时弹窗点「复制安装链接」，再到 LiveContainer 里 Install from URL 粘贴安装。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
             }
