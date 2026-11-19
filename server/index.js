@@ -134,6 +134,11 @@ const io = new Server(httpServer, { cors: { origin: false } });
 const deviceSockets = new Map();
 const viewerSockets = new Map();
 const activeViews = new Map();
+// 设备连接代次：网络切换重连会递增代次，断开时的释放定时器只在自己代次仍最新时才生效，
+// 避免「旧断开留下的定时器」把已重连并恢复的会话误释放。
+const deviceGen = new Map();
+const resumeTimers = new Map();  // 设备 -> 最近一次下发恢复通知的时间，用于去抖
+const RESUME_DEBOUNCE_MS = 4000;
 const deviceStatus = (deviceId, status) => io.to('viewers').emit('device:status', { deviceId, status });
 // status 事件只作为轻量提示；权威状态走 devices 列表广播
 const notify = (deviceId, status) => { deviceStatus(deviceId, status); broadcastDevices(); };
@@ -156,13 +161,21 @@ io.on('connection', (socket) => {
   } else {
     const deviceId = socket.data.deviceId;
     deviceSockets.set(deviceId, socket); notify(deviceId, 'idle');
-    console.log(`[device] connected ${deviceId} activeViews=${activeViews.has(deviceId)}`);
-    // 重连且会话仍在：主动通知设备重建 peer 并重新协商
+    const gen = (deviceGen.get(deviceId) || 0) + 1;
+    deviceGen.set(deviceId, gen);
+    console.log(`[device] connected ${deviceId} gen=${gen} activeViews=${activeViews.has(deviceId)}`);
+    // 重连且会话仍在：主动通知设备重建 peer 并重新协商（去抖，避免连续下发打断正在建立的连接）
     const activeViewerId = activeViews.get(deviceId);
     if (activeViewerId) {
-      console.log(`[device] ${deviceId} resumed with viewer ${activeViewerId}`);
-      socket.emit('watch:resumed', { viewerId: activeViewerId, iceServers });
-      viewerSockets.get(activeViewerId)?.emit('watch:resume', { deviceId });
+      const last = resumeTimers.get(deviceId) || 0;
+      if (Date.now() - last > RESUME_DEBOUNCE_MS) {
+        resumeTimers.set(deviceId, Date.now());
+        console.log(`[device] ${deviceId} resumed with viewer ${activeViewerId}`);
+        socket.emit('watch:resumed', { viewerId: activeViewerId, iceServers });
+        viewerSockets.get(activeViewerId)?.emit('watch:resume', { deviceId });
+      } else {
+        console.log(`[device] ${deviceId} resume suppressed (debounce)`);
+      }
     }
   }
   socket.on('watch:start', ({ deviceId }, callback = () => {}) => {
@@ -202,7 +215,14 @@ io.on('connection', (socket) => {
     if (socket.data.role !== 'device') return;
     const target = deviceId || socket.data.deviceId;
     const viewerId = activeViews.get(target);
-    if (!viewerId) { console.log(`[device] ${target} resume requested but no active session`); socket.emit('watch:stop'); return; }
+    if (!viewerId) {
+      // 会话已释放：不要给设备发 watch:stop（那会彻底终止），让它继续等待并重试
+      console.log(`[device] ${target} resume requested but no active session`);
+      return;
+    }
+    const last = resumeTimers.get(target) || 0;
+    if (Date.now() - last <= RESUME_DEBOUNCE_MS) { console.log(`[device] ${target} resume suppressed (debounce)`); return; }
+    resumeTimers.set(target, Date.now());
     console.log(`[device] ${target} resume -> viewer ${viewerId}`);
     socket.emit('watch:resumed', { viewerId, iceServers });
     viewerSockets.get(viewerId)?.emit('watch:resume', { deviceId: target });
@@ -222,13 +242,25 @@ io.on('connection', (socket) => {
       deviceSockets.delete(deviceId);
       const viewerId = activeViews.get(deviceId);
       if (viewerId) {
-        console.log(`[device] ${deviceId} disconnected, hold session ${viewerId} for 60s`);
+        const myGen = deviceGen.get(deviceId) || 0;
+        console.log(`[device] ${deviceId} disconnected (gen=${myGen}), hold session ${viewerId} for 120s`);
         setTimeout(() => {
-          // 期间已重连（deviceSockets 恢复）则不释放
+          // 仅当自己仍是最新的代次、且设备此刻确实离线、且会话没变时才释放
+          const curGen = deviceGen.get(deviceId) || 0;
+          if (curGen !== myGen) { console.log(`[device] ${deviceId} gen changed ${myGen}->${curGen}, session kept`); return; }
           if (deviceSockets.has(deviceId)) { console.log(`[device] ${deviceId} reconnected in time, session kept`); return; }
-          console.log(`[device] ${deviceId} session expired, releasing`);
-          stop(deviceId, viewerId); notify(deviceId, 'offline');
-        }, 60000);
+          if (activeViews.get(deviceId) !== viewerId) { console.log(`[device] ${deviceId} session already changed, skip`); return; }
+          console.log(`[device] ${deviceId} still offline, keeping reservation; final release in 120s`);
+          notify(deviceId, 'offline');
+          // 再等一轮仍未重连才真正释放，避免设备长期离线占住设备
+          setTimeout(() => {
+            const g2 = deviceGen.get(deviceId) || 0;
+            if (g2 !== myGen || deviceSockets.has(deviceId)) return;
+            if (activeViews.get(deviceId) !== viewerId) return;
+            console.log(`[device] ${deviceId} final release of session ${viewerId}`);
+            stop(deviceId, viewerId);
+          }, 120000);
+        }, 120000);
       } else {
         notify(deviceId, 'offline');
       }

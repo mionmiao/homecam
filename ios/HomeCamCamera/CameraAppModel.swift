@@ -21,6 +21,7 @@ final class CameraAppModel: ObservableObject {
     private var needsForegroundCapture = true  // 冷启动/真正从后台回来时拍一次
     private var backgroundStopWork: DispatchWorkItem?
     private var resignActiveAt: Date?           // 失去活跃的时间，用于判断是否锁屏/切后台
+    private var lastRebuildAt: Date?            // 上次重建连接的时间，用于去抖
     private let captureDelayThreshold: TimeInterval = 10  // 离开超过 10 秒才算锁屏/切后台
 
     init() {
@@ -159,6 +160,9 @@ final class CameraAppModel: ObservableObject {
                 // leaving the viewer stuck in a "connecting" state.
                 guard isActive else { signaling?.sendStopped(); return }
                 try await requestCapturePermissions()
+                // 网络抖动时服务端可能连续下发恢复通知：3 秒内忽略重复重建
+                if let last = lastRebuildAt, Date().timeIntervalSince(last) < 3 { return }
+                lastRebuildAt = Date()
                 // 网络切换后重建：先停掉旧 peer（不上报 idle，避免服务端释放会话），再新建重新协商
                 if self.stream.isActive { self.stream.stop("rebuild", notifyState: false) }
                 try stream.start(viewerID: viewerID, iceServers: iceServers)
