@@ -69,10 +69,14 @@ async function checkWebVersion() {
       if (!updateDismissed) appendDiag('观看端有新版本，停止观看后会自动刷新');
       return;
     }
-    location.reload();
+    // 未在观看：显示提示后自动刷新，让用户看得见发生了什么
+    banner.hidden = false;
+    banner.querySelector('span').textContent = '观看端有新版本，正在刷新…';
+    setTimeout(() => location.reload(), 800);
   } catch { /* 网络波动忽略 */ }
 }
 setInterval(checkWebVersion, 20000);
+{ const el = document.getElementById('buildInfo'); if (el) el.textContent = `观看端版本 ${currentWebVersion || '—'} · 有新版本会自动刷新`; }
 
 async function loadPhotos() {
   try {

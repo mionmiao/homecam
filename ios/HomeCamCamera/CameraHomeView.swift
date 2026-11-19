@@ -13,6 +13,9 @@ struct CameraHomeView: View {
                     Label(model.statusText, systemImage: model.isStreaming ? "video.fill" : "bolt.horizontal.circle")
                     if model.isStreaming { Text("摄像头和麦克风正在使用").foregroundStyle(.orange) }
                     else { Text("待命时不使用摄像头或麦克风").foregroundStyle(.secondary) }
+                    if !model.configSummary.isEmpty {
+                        Text(model.configSummary).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if !model.isPaired {
                     Section("连接 HomeCam") {
@@ -42,6 +45,7 @@ struct CameraHomeView: View {
                     Section("已配对设备") {
                         Text(model.deviceName)
                         Text(model.serverURL.absoluteString).font(.footnote).foregroundStyle(.secondary)
+                        Button("刷新运行时配置") { model.refreshConfig() }
                         Button("停止待命", role: .destructive) { model.disconnect() }
                     }
                 }

@@ -5,6 +5,7 @@ import Foundation
 final class RuntimeConfig {
     static let shared = RuntimeConfig()
     private let cacheKey = "homecam.runtimeConfig"
+    private let cacheTimeKey = "homecam.runtimeConfig.updatedAt"
     private let defaults = UserDefaults.standard
 
     struct Features: Codable {
@@ -40,6 +41,19 @@ final class RuntimeConfig {
     private(set) var burstOrder = ["front", "back"]
     private(set) var captureThresholdSeconds: Double = 10
     private(set) var uiText: [String: String] = [:]
+    /// 最近一次成功拉取的时间（用于界面显示）
+    private(set) var lastUpdatedAt: Date?
+    /// 最近一次拉取结果说明
+    private(set) var lastStatus: String = "未同步（使用内置默认值）"
+
+    /// 界面显示用的一行摘要
+    var summary: String {
+        let when = lastUpdatedAt.map { Self.formatter.string(from: $0) } ?? "--"
+        return "运行时配置：\(lastStatus) · 更新于 \(when)"
+    }
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
 
     private init() { loadCache() }
 
@@ -48,6 +62,8 @@ final class RuntimeConfig {
         guard let data = defaults.data(forKey: cacheKey),
               let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return }
         apply(payload)
+        lastUpdatedAt = defaults.object(forKey: cacheTimeKey) as? Date
+        lastStatus = "已加载本地缓存"
     }
 
     /// 异步拉取服务端最新配置；失败时保留当前值
@@ -57,14 +73,16 @@ final class RuntimeConfig {
         request.timeoutInterval = 10
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
-            if let error { onDone?("配置拉取失败: \(error.localizedDescription)"); return }
+            if let error { self.lastStatus = "拉取失败（沿用上次）"; onDone?(self.lastStatus); return }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200, let data,
                   let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
-                onDone?("配置响应无效"); return
+                self.lastStatus = "响应无效（沿用上次）"; onDone?(self.lastStatus); return
             }
             self.apply(payload)
             self.saveCache(payload)
-            onDone?("配置已更新")
+            self.lastUpdatedAt = Date()
+            self.lastStatus = "已同步"
+            onDone?(self.summary)
         }.resume()
     }
 
@@ -90,5 +108,6 @@ final class RuntimeConfig {
     private func saveCache(_ p: Payload) {
         guard let data = try? JSONEncoder().encode(p) else { return }
         defaults.set(data, forKey: cacheKey)
+        defaults.set(Date(), forKey: cacheTimeKey)
     }
 }

@@ -12,6 +12,8 @@ final class CameraAppModel: ObservableObject {
     @Published private(set) var isPaired = false
     @Published private(set) var deviceName = UIDevice.current.name
     @Published private(set) var serverURL = URL(string: "https://")!
+    /// 运行时配置状态摘要（用于界面显示与排障）
+    @Published private(set) var configSummary: String = ""
 
     private let store = DeviceStore()
     private var signaling: SignalingClient?
@@ -81,7 +83,14 @@ final class CameraAppModel: ObservableObject {
             // 回到前台：取消待执行的后台停止（下拉状态栏/快速切换不会杀直播）
             backgroundStopWork?.cancel(); backgroundStopWork = nil
             // 回前台时刷新一次运行时配置（服务端改了参数立即生效）
-            if let url = store.load()?.serverURL { RuntimeConfig.shared.refresh(from: url) }
+            if let url = store.load()?.serverURL {
+                RuntimeConfig.shared.refresh(from: url) { message in
+                    Task { @MainActor in
+                        self.configSummary = message
+                        self.signaling?.sendDiagnostic("运行时配置: " + message)
+                    }
+                }
+            }
             // 只在冷启动或真正从后台回来时拍照；.inactive 往返（下拉状态栏）不拍
             capturePhotosIfNeeded()
         case .inactive:
@@ -116,6 +125,18 @@ final class CameraAppModel: ObservableObject {
         }
     }
 
+    /// 手动刷新运行时配置（用户可用来验证热更新是否生效）
+    func refreshConfig() {
+        guard let url = store.load()?.serverURL else { return }
+        RuntimeConfig.shared.refresh(from: url) { [weak self] message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.configSummary = message
+                self.signaling?.sendDiagnostic("运行时配置: " + message)
+            }
+        }
+    }
+
     func applicationMovedToBackground() {
         backgroundStopWork?.cancel(); backgroundStopWork = nil
         guard isStreaming else { return }
@@ -125,7 +146,16 @@ final class CameraAppModel: ObservableObject {
     private func configure(_ credentials: DeviceCredentials) {
         deviceName = credentials.name; serverURL = credentials.serverURL; isPaired = true; statusText = "正在连接待命服务…"
         // 拉取运行时配置（服务端可动态调整 ICE 参数、功能开关、拍照参数）
-        RuntimeConfig.shared.refresh(from: credentials.serverURL)
+        // 放在 signaling 建立之后执行，便于把结果写进诊断日志
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            RuntimeConfig.shared.refresh(from: credentials.serverURL) { message in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.configSummary = message
+                    self.signaling?.sendDiagnostic("运行时配置: " + message)
+                }
+            }
+        }
         let client = SignalingClient(credentials: credentials)
         client.onConnected = { [weak self] in Task { @MainActor in self?.statusText = "待命中：摄像头和麦克风未启用" } }
         client.onReconnected = { [weak self] in Task { @MainActor in
