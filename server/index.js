@@ -173,6 +173,7 @@ app.use('/releases', express.static(releasesDir, { maxAge: 0, index: false }));
 app.get('/api/version', (req, res) => {
   const base = `https://${req.headers.host}`;
   if (!latestRelease) return res.json({ build: 0, version: '', notes: '', ipaUrl: '', ready: false });
+  console.log(`[version] checked by ${req.socket.remoteAddress} build=${latestRelease.build}`);
   res.json({
     build: latestRelease.build, version: latestRelease.version, notes: latestRelease.notes,
     ipaUrl: `${base}/releases/HomeCamCamera.ipa`, sha256: latestRelease.sha256,

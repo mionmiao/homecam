@@ -8,6 +8,8 @@ struct UpdateInfo: Identifiable {
     let version: String
     let notes: String
     let ipaUrl: String
+    /// 附加提示（例如上次未完成安装）
+    var hint: String = ""
 }
 
 /// App 内提示类型：更新弹窗或普通消息
@@ -57,9 +59,11 @@ enum UpdateChecker {
         components.queryItems = [URLQueryItem(name: "url", value: ipa.absoluteString)]
         if let installURL = components.url, UIApplication.shared.canOpenURL(installURL) {
             UIApplication.shared.open(installURL)
-            return "已唤起 LiveContainer 安装，装完后重新打开 App 即可"
+            // LiveContainer 会把安装任务排队，提示重启 LiveContainer——必须完全退出
+            // LiveContainer 本身（多任务界面向上划掉它），只重启本 App 无效。
+            return "已通知 LiveContainer 下载新版。请在多任务界面把 LiveContainer 整个划掉，再重新打开它完成安装；安装后从 LiveContainer 启动本 App"
         }
         UIApplication.shared.open(ipa)
-        return "未检测到 LiveContainer，已在浏览器打开下载链接；请用 LiveContainer 导入"
+        return "未检测到 LiveContainer，已在浏览器打开下载链接；请用 LiveContainer 的「+」导入"
     }
 }

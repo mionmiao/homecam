@@ -29,6 +29,7 @@ final class CameraAppModel: ObservableObject {
     private var resignActiveAt: Date?           // 失去活跃的时间，用于判断是否锁屏/切后台
     private var lastRebuildAt: Date?            // 上次重建连接的时间，用于去抖
     private var updateDeferred: UpdateInfo?    // 直播中发现的更新，停止后提示
+    private var skippedUpdateBuild: Int = 0    // 用户选择稍后的 build
 
     init() {
         if let credentials = store.load() { configure(credentials) }
@@ -146,14 +147,17 @@ final class CameraAppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if let info {
+                    var info = info
+                    if self.skippedUpdateBuild == info.build {
+                        info.hint = "上次未完成安装：请确认已在多任务界面把 LiveContainer 整个划掉并重新打开"
+                    }
                     // 已在直播时推迟到停止后再提示，避免打断观看
                     if self.isStreaming { self.updateDeferred = info } else { self.notice = .update(info) }
                     self.signaling?.sendDiagnostic("发现新版本 build=\(info.build)（本地 \(UpdateChecker.localBuild)）")
                 } else if manual {
                     self.notice = .message("已是最新版本（当前 build \(UpdateChecker.localBuild)）")
                     self.signaling?.sendDiagnostic("已是最新版本（build \(UpdateChecker.localBuild)）")
-                }
-            }
+                }            }
         }
     }
 
@@ -162,6 +166,12 @@ final class CameraAppModel: ObservableObject {
         let message = UpdateChecker.install(info)
         notice = .message(message)
         statusText = message
+    }
+
+    /// 用户选择稍后：记住该 build，下次提示时说明上次没装完
+    func deferUpdate(_ info: UpdateInfo) {
+        skippedUpdateBuild = info.build
+        notice = nil
     }
 
     /// 手动刷新运行时配置（用户可用来验证热更新是否生效）
