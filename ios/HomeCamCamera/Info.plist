@@ -3,8 +3,13 @@
 <plist version="1.0"><dict>
   <key>CFBundleDisplayName</key><string>HomeCam Camera</string>
   <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>com.homecam.camera</string>
+    <key>CFBundleURLSchemes</key><array><string>homecam</string></array>
+  </dict></array>
+  <key>LSApplicationQueriesSchemes</key><array><string>livecontainer</string></array>
   <key>NSCameraUsageDescription</key><string>仅在网页端开始观看时使用摄像头传输家庭画面。</string>
   <key>NSMicrophoneUsageDescription</key><string>仅在网页端开始观看时传输声音。</string>
   <key>UILaunchScreen</key><dict/>

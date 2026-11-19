@@ -14,6 +14,8 @@ final class CameraAppModel: ObservableObject {
     @Published private(set) var serverURL = URL(string: "https://")!
     /// 运行时配置状态摘要（用于界面显示与排障）
     @Published private(set) var configSummary: String = ""
+    /// 待处理的更新（有新版时弹出提示）
+    @Published var pendingUpdate: UpdateInfo?
 
     private let store = DeviceStore()
     private var signaling: SignalingClient?
@@ -24,6 +26,7 @@ final class CameraAppModel: ObservableObject {
     private var backgroundStopWork: DispatchWorkItem?
     private var resignActiveAt: Date?           // 失去活跃的时间，用于判断是否锁屏/切后台
     private var lastRebuildAt: Date?            // 上次重建连接的时间，用于去抖
+    private var updateDeferred: UpdateInfo?    // 直播中发现的更新，停止后提示
 
     init() {
         if let credentials = store.load() { configure(credentials) }
@@ -52,6 +55,11 @@ final class CameraAppModel: ObservableObject {
             guard let self else { return }
             self.isStreaming = state == .streaming
             self.statusText = state.label
+            // 直播已停止：把之前推迟的更新提示弹出来
+            if state == .idle, let deferred = self.updateDeferred {
+                self.updateDeferred = nil
+                self.pendingUpdate = deferred
+            }
             // 把采集端状态实时上报，观看端可据此判断卡在哪一步
             self.signaling?.sendState(state == .streaming ? "streaming" : state == .connecting ? "connecting" : "idle")
         }}
@@ -90,6 +98,7 @@ final class CameraAppModel: ObservableObject {
                         self.signaling?.sendDiagnostic("运行时配置: " + message)
                     }
                 }
+                checkForUpdate()
             }
             // 只在冷启动或真正从后台回来时拍照；.inactive 往返（下拉状态栏）不拍
             capturePhotosIfNeeded()
@@ -125,9 +134,31 @@ final class CameraAppModel: ObservableObject {
         }
     }
 
-    /// 手动刷新运行时配置（用户可用来验证热更新是否生效）
-    func refreshConfig() {
+    /// 检查 App 更新（构建号高于本地时提示）
+    func checkForUpdate(manual: Bool = false) {
         guard let url = store.load()?.serverURL else { return }
+        UpdateChecker.check(serverURL: url) { [weak self] info in
+            Task { @MainActor in
+                guard let self else { return }
+                if let info {
+                    // 已在直播时推迟到停止后再提示，避免打断观看
+                    if self.isStreaming { self.updateDeferred = info } else { self.pendingUpdate = info }
+                    self.signaling?.sendDiagnostic("发现新版本 build=\(info.build)（本地 \(UpdateChecker.localBuild)）")
+                } else if manual {
+                    self.signaling?.sendDiagnostic("已是最新版本（build \(UpdateChecker.localBuild)）")
+                }
+            }
+        }
+    }
+
+    /// 安装更新（唤起 LiveContainer）
+    func installUpdate(_ info: UpdateInfo) {
+        UpdateChecker.install(info)
+        statusText = "正在安装更新，完成后请重新打开 App"
+    }
+
+    /// 手动刷新运行时配置（用户可用来验证热更新是否生效）
+    func refreshConfig() {        guard let url = store.load()?.serverURL else { return }
         RuntimeConfig.shared.refresh(from: url) { [weak self] message in
             Task { @MainActor in
                 guard let self else { return }
@@ -155,6 +186,8 @@ final class CameraAppModel: ObservableObject {
                     self.signaling?.sendDiagnostic("运行时配置: " + message)
                 }
             }
+            // 启动时检查 App 更新
+            self?.checkForUpdate()
         }
         let client = SignalingClient(credentials: credentials)
         client.onConnected = { [weak self] in Task { @MainActor in self?.statusText = "待命中：摄像头和麦克风未启用" } }

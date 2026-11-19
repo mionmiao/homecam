@@ -13,12 +13,14 @@ const dataDir = path.resolve(root, process.env.DATA_DIR || 'data');
 const photosDir = path.join(dataDir, 'photos');
 const dbFile = path.join(dataDir, 'homecam.json');
 const runtimeConfigFile = path.join(dataDir, 'runtime-config.json');
+const releasesDir = path.join(dataDir, 'releases');
 const adminPassword = process.env.ADMIN_PASSWORD;
 const tokenSecret = process.env.TOKEN_SECRET;
 if (!adminPassword || !tokenSecret) throw new Error('ADMIN_PASSWORD and TOKEN_SECRET must be set in .env');
 let iceServers;
 try { iceServers = JSON.parse(process.env.ICE_SERVERS || '[{"urls":["stun:stun.l.google.com:19302"]}]'); } catch { throw new Error('ICE_SERVERS must be valid JSON'); }
 fs.mkdirSync(dataDir, { recursive: true });
+fs.mkdirSync(releasesDir, { recursive: true });
 fs.mkdirSync(path.join(photosDir, 'front'), { recursive: true });
 fs.mkdirSync(path.join(photosDir, 'back'), { recursive: true });
 let db = fs.existsSync(dbFile) ? JSON.parse(fs.readFileSync(dbFile, 'utf8')) : { devices: [], pairingCodes: [] };
@@ -65,6 +67,39 @@ function writeRuntimeConfig(patch) {
   console.log('[config] updated');
   return next;
 }
+// 自动同步 GitHub Release 上的最新 unsigned IPA，供 App 检查更新与一键安装
+const releaseRepo = process.env.RELEASE_REPO || 'mionmiao/homecam';
+const releaseTag = process.env.RELEASE_TAG || 'ios-unsigned';
+let latestRelease = null;
+const parseBuild = (body) => {
+  const m = /build=(\d+)/.exec(body || '');
+  if (m) return Number(m[1]);
+  const v = /1\.0\.(\d+)/.exec(body || '');
+  return v ? Number(v[1]) : 0;
+};
+async function syncLatestRelease() {
+  try {
+    const headers = { 'User-Agent': 'homecam', 'Accept': 'application/vnd.github+json' };
+    if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+    const res = await fetch(`https://api.github.com/repos/${releaseRepo}/releases/tags/${releaseTag}`, { headers });
+    if (!res.ok) { console.log('[release] fetch failed', res.status); return; }
+    const rel = await res.json();
+    const asset = (rel.assets || []).find((a) => a.name === 'HomeCamCamera.ipa');
+    if (!asset) { console.log('[release] no ipa asset'); return; }
+    if (latestRelease && latestRelease.assetId === asset.id) return;   // 没有新构建
+    const ipaRes = await fetch(asset.browser_download_url, { headers });
+    if (!ipaRes.ok) { console.log('[release] download failed', ipaRes.status); return; }
+    const buf = Buffer.from(await ipaRes.arrayBuffer());
+    fs.writeFileSync(path.join(releasesDir, 'HomeCamCamera.ipa'), buf, { mode: 0o644 });
+    const body = rel.body || '';
+    const notes = body.split('\n').filter((l) => l.trim() && !/build=\d+/.test(l)).slice(0, 6).join('\n');
+    latestRelease = {
+      build: parseBuild(body), version: (body.match(/1\.0\.\d+/) || ['1.0'])[0], notes,
+      assetId: asset.id, sha256: digest(buf), size: buf.length, publishedAt: asset.updated_at
+    };
+    console.log(`[release] synced build=${latestRelease.build} size=${latestRelease.size}`);
+  } catch (e) { console.log('[release] sync error', e.message); }
+}
 // 统一设备状态视图：所有下发到观看端的列表都带 online/status，避免状态错乱
 function deviceView(d) {
   return { ...publicDevice(d), online: deviceSockets.has(d.id), status: activeViews.has(d.id) ? 'streaming' : (deviceSockets.has(d.id) ? 'idle' : 'offline') };
@@ -92,6 +127,17 @@ app.get(['/', '/index.html'], (_req, res) => {
   res.set('Cache-Control', 'no-store').type('html').send(html);
 });
 app.get('/api/web-version', (_req, res) => res.json({ version: webVersion() }));
+app.use('/releases', express.static(releasesDir, { maxAge: 0, index: false }));
+// App 检查更新：返回最新可用构建与直链下载地址
+app.get('/api/version', (req, res) => {
+  const base = `https://${req.headers.host}`;
+  if (!latestRelease) return res.json({ build: 0, version: '', notes: '', ipaUrl: '', ready: false });
+  res.json({
+    build: latestRelease.build, version: latestRelease.version, notes: latestRelease.notes,
+    ipaUrl: `${base}/releases/HomeCamCamera.ipa`, sha256: latestRelease.sha256,
+    size: latestRelease.size, publishedAt: latestRelease.publishedAt, ready: true
+  });
+});
 app.use(express.static(path.join(root, 'web')));
 app.use('/photos', express.static(photosDir, { maxAge: 0, index: false }));
 const requireUser = (req, res, next) => {
@@ -192,6 +238,9 @@ app.delete('/api/devices/:id', requireUser, (req, res) => {
 });
 
 const httpServer = app.listen(port, () => console.log(`HomeCam listening on :${port}`));
+// 定期同步最新 IPA，供 App 一键更新
+syncLatestRelease();
+setInterval(syncLatestRelease, 60000).unref();
 const io = new Server(httpServer, { cors: { origin: false } });
 const deviceSockets = new Map();
 const viewerSockets = new Map();
