@@ -100,29 +100,31 @@ async function syncLatestRelease() {
     const asset = (rel.assets || []).find((a) => a.name === 'HomeCamCamera.ipa');
     if (!asset) { console.log('[release] no ipa asset'); return; }
     if (latestRelease && latestRelease.assetId === asset.id) return;   // 没有新构建
-    const ipaRes = await fetch(asset.browser_download_url, { headers });
+    // 用 API asset 端点（带 asset id）而不是 browser_download_url：
+    // 后者是按 tag 的固定路径，CDN 可能缓存并返回上一次的旧文件
+    const assetApi = `https://api.github.com/repos/${releaseRepo}/releases/assets/${asset.id}`;
+    const ipaRes = await fetch(assetApi, { headers: { ...headers, Accept: 'application/octet-stream' } });
     if (!ipaRes.ok) { console.log('[release] download failed', ipaRes.status); return; }
     const buf = Buffer.from(await ipaRes.arrayBuffer());
-    // GitHub CDN 可能短暂返回上一次的旧文件，用 release 里的 sha256 校验，避免发布错误版本号
-    let expected = '';
-    const shaAsset = (rel.assets || []).find((a) => a.name === 'HomeCamCamera.ipa.sha256');
-    if (shaAsset) {
-      try {
-        const shaRes = await fetch(shaAsset.browser_download_url, { headers });
-        if (shaRes.ok) expected = (await shaRes.text()).trim().split(/\s+/)[0];
-      } catch { /* 校验文件拿不到就跳过 */ }
-    }
+    // 校验用 GitHub API 提供的 digest（权威，不受 CDN 缓存影响）
+    const expected = String(asset.digest || '').replace(/^sha256:/, '');
     const actual = digest(buf);
     if (expected && expected !== actual) {
-      console.log(`[release] checksum mismatch (cdn stale?), keep previous release; retry in 60s`);
+      console.log(`[release] digest mismatch (cdn stale?), keep previous release; retry in 60s`);
       return;
     }
     fs.writeFileSync(path.join(releasesDir, 'HomeCamCamera.ipa'), buf, { mode: 0o644 });
     const body = rel.body || '';
     // 以 IPA 内部真实的 CFBundleVersion 为准，body 里的 build= 仅作兜底
     const realBuild = readBundleVersion(path.join(releasesDir, 'HomeCamCamera.ipa'));
+    const bodyBuild = parseBuild(body);
+    // body 通过 API 拿（新鲜），IPA 内容可能是陈旧 CDN 副本：两者不符说明内容过期，拒绝发布
+    if (bodyBuild && realBuild && Number(realBuild) !== Number(bodyBuild)) {
+      console.log(`[release] stale content (ipa build ${realBuild} != release build ${bodyBuild}), keep previous; retry in 60s`);
+      return;
+    }
     let build = realBuild ? Number(realBuild) : 0;
-    if (!build) build = parseBuild(body);
+    if (!build) build = bodyBuild;
     // 只取「更新说明：」那一行作为弹窗文案，其余是发布流程说明，不适合展示给用户
     const noteMatch = /更新说明：(.+)/.exec(body);
     let notes = noteMatch ? noteMatch[1].trim().split('\n')[0].slice(0, 120) : '';
