@@ -94,7 +94,13 @@ async function syncLatestRelease() {
     const body = rel.body || '';
     // 只取「更新说明：」那一行作为弹窗文案，其余是发布流程说明，不适合展示给用户
     const noteMatch = /更新说明：(.+)/.exec(body);
-    const notes = noteMatch ? noteMatch[1].trim().split('\n')[0].slice(0, 120) : '包含新功能与修复';
+    let notes = noteMatch ? noteMatch[1].trim().split('\n')[0].slice(0, 120) : '';
+    if (!notes) {
+      // 老版本 body 没有「更新说明」行，回退到首行非空内容（跳过导入教程类行）
+      notes = body.split('\n').map((l) => l.trim())
+        .filter((l) => l && !/^(下载|JIT-less|此包不含|未签名 IPA)/.test(l) && !/build=\d+/.test(l))[0] || '包含新功能与修复';
+      notes = notes.slice(0, 120);
+    }
     latestRelease = {
       build: parseBuild(body), version: (body.match(/1\.0\.\d+/) || ['1.0'])[0], notes,
       assetId: asset.id, sha256: digest(buf), size: buf.length, publishedAt: asset.updated_at

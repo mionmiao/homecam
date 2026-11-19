@@ -41,16 +41,19 @@ enum UpdateChecker {
     }
 
     /// 唤起 LiveContainer 安装新包；未安装 LiveContainer 时降级为用 Safari 打开下载链接
-    static func install(_ info: UpdateInfo) {
-        guard let ipa = URL(string: info.ipaUrl) else { return }
+    /// 返回给用户看的提示文案
+    @discardableResult
+    static func install(_ info: UpdateInfo) -> String {
+        guard let ipa = URL(string: info.ipaUrl) else { return "下载地址无效" }
         var components = URLComponents()
         components.scheme = "livecontainer"
         components.host = "install"
         components.queryItems = [URLQueryItem(name: "url", value: ipa.absoluteString)]
         if let installURL = components.url, UIApplication.shared.canOpenURL(installURL) {
             UIApplication.shared.open(installURL)
-        } else {
-            UIApplication.shared.open(ipa)
+            return "已唤起 LiveContainer 安装，装完后重新打开 App 即可"
         }
+        UIApplication.shared.open(ipa)
+        return "未检测到 LiveContainer，已在浏览器打开下载链接；请用 LiveContainer 导入"
     }
 }

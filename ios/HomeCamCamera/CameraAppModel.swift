@@ -16,6 +16,8 @@ final class CameraAppModel: ObservableObject {
     @Published private(set) var configSummary: String = ""
     /// 待处理的更新（有新版时弹出提示）
     @Published var pendingUpdate: UpdateInfo?
+    /// 当前安装的构建号（常驻显示，便于确认版本）
+    @Published private(set) var appBuildText: String = "build \(UpdateChecker.localBuild)"
 
     private let store = DeviceStore()
     private var signaling: SignalingClient?
@@ -153,8 +155,7 @@ final class CameraAppModel: ObservableObject {
 
     /// 安装更新（唤起 LiveContainer）
     func installUpdate(_ info: UpdateInfo) {
-        UpdateChecker.install(info)
-        statusText = "正在安装更新，完成后请重新打开 App"
+        statusText = UpdateChecker.install(info)
     }
 
     /// 手动刷新运行时配置（用户可用来验证热更新是否生效）

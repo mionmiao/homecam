@@ -16,6 +16,7 @@ struct CameraHomeView: View {
                     if !model.configSummary.isEmpty {
                         Text(model.configSummary).font(.caption).foregroundStyle(.secondary)
                     }
+                    Text("当前安装版本 \(model.appBuildText)").font(.caption).foregroundStyle(.secondary)
                 }
                 if !model.isPaired {
                     Section("连接 HomeCam") {
