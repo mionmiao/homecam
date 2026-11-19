@@ -95,18 +95,23 @@ async function syncLatestRelease() {
     const headers = { 'User-Agent': 'homecam', 'Accept': 'application/vnd.github+json' };
     if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
     const res = await fetch(`https://api.github.com/repos/${releaseRepo}/releases/tags/${releaseTag}`, { headers });
-    if (!res.ok) { console.log('[release] fetch failed', res.status); return; }
+    if (!res.ok) {
+      const remaining = res.headers.get('x-ratelimit-remaining');
+      console.log(`[release] fetch failed ${res.status}${remaining === '0' ? ' (rate limit exceeded)' : ''}`);
+      return;
+    }
     const rel = await res.json();
     const asset = (rel.assets || []).find((a) => a.name === 'HomeCamCamera.ipa');
     if (!asset) { console.log('[release] no ipa asset'); return; }
     if (latestRelease && latestRelease.assetId === asset.id) return;   // 没有新构建
-    // 用 API asset 端点（带 asset id）而不是 browser_download_url：
-    // 后者是按 tag 的固定路径，CDN 可能缓存并返回上一次的旧文件
-    const assetApi = `https://api.github.com/repos/${releaseRepo}/releases/assets/${asset.id}`;
-    const ipaRes = await fetch(assetApi, { headers: { ...headers, Accept: 'application/octet-stream' } });
+    // 用 browser_download_url 下载（API asset 端点对匿名请求返回 403），
+    // 带上 no-cache 头避免 CDN 命中旧缓存；再用 API 提供的 digest 校验内容
+    const ipaRes = await fetch(asset.browser_download_url, {
+      headers: { ...headers, 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
+    });
     if (!ipaRes.ok) { console.log('[release] download failed', ipaRes.status); return; }
     const buf = Buffer.from(await ipaRes.arrayBuffer());
-    // 校验用 GitHub API 提供的 digest（权威，不受 CDN 缓存影响）
+    // 校验用 GitHub API 返回的 asset.digest（权威，不受 CDN 缓存影响）
     const expected = String(asset.digest || '').replace(/^sha256:/, '');
     const actual = digest(buf);
     if (expected && expected !== actual) {
@@ -281,8 +286,9 @@ app.delete('/api/devices/:id', requireUser, (req, res) => {
 
 const httpServer = app.listen(port, () => console.log(`HomeCam listening on :${port}`));
 // 定期同步最新 IPA，供 App 一键更新
+// 5 分钟一次：GitHub 匿名 API 配额只有 60 次/小时，1 分钟一次会直接打满
 syncLatestRelease();
-setInterval(syncLatestRelease, 60000).unref();
+setInterval(syncLatestRelease, 300000).unref();
 const io = new Server(httpServer, { cors: { origin: false } });
 const deviceSockets = new Map();
 const viewerSockets = new Map();
