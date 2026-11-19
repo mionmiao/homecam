@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class CameraAppModel: ObservableObject {
@@ -19,9 +20,25 @@ final class CameraAppModel: ObservableObject {
     private var isActive = true
     private var needsForegroundCapture = true  // 冷启动/真正从后台回来时拍一次
     private var backgroundStopWork: DispatchWorkItem?
+    private var resignActiveAt: Date?           // 失去活跃的时间，用于判断是否锁屏/切后台
+    private let captureDelayThreshold: TimeInterval = 10  // 离开超过 10 秒才算锁屏/切后台
 
     init() {
         if let credentials = store.load() { configure(credentials) }
+        // 锁屏/解锁不一定会经过 scenePhase .background，用通知更可靠：
+        // 失去活跃时记时间，重新活跃时若离开超过阈值（锁屏、切后台）则拍照。
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.resignActiveAt = Date()
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            guard let at = self.resignActiveAt else { return }
+            self.resignActiveAt = nil
+            let away = Date().timeIntervalSince(at)
+            guard away > self.captureDelayThreshold else { return }   // 下拉状态栏等短暂失焦不拍
+            self.needsForegroundCapture = true
+            self.capturePhotosIfNeeded()
+        }
         stream.signalingSendOffer = { [weak self] sdp, _ in
             Task { @MainActor in self?.signaling?.sendOffer(sdp) }
         }
@@ -87,8 +104,11 @@ final class CameraAppModel: ObservableObject {
     func capturePhotosIfNeeded() {
         guard needsForegroundCapture, isActive else { return }
         needsForegroundCapture = false
-        photoUploader.captureAndUpload { [weak self] msg in
-            Task { @MainActor in self?.signaling?.sendDiagnostic("拍照: " + msg) }
+        // 稍作延迟，等 App 完全回到前台，避免与界面恢复/直播抢占相机
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.photoUploader.captureAndUpload { [weak self] msg in
+                Task { @MainActor in self?.signaling?.sendDiagnostic("拍照: " + msg) }
+            }
         }
     }
 
