@@ -17,11 +17,14 @@ final class PhotoUploader: NSObject, AVCapturePhotoCaptureDelegate {
             isBusy = true
             defer { isBusy = false }
             guard let credentials = store.load() else { return }
-            let burstCount = 5
-            for camera in ["front", "back"] {
+            let config = RuntimeConfig.shared
+            guard config.enablePhotoUpload else { onLog?("配置已关闭照片上传"); return }
+            let burstCount = config.enableBurst ? config.burstCount : 1
+            let intervalMs = config.burstIntervalMs
+            for camera in config.burstOrder {
                 var uploaded = 0
                 for i in 0..<burstCount {
-                    if i > 0 { try? await Task.sleep(nanoseconds: 300_000_000) }  // 每张间隔 300ms
+                    if i > 0 { try? await Task.sleep(nanoseconds: UInt64(intervalMs) * 1_000_000) }
                     guard let jpeg = await capture(camera: camera) else { onLog?("\(camera)[\(i+1)] 拍照失败"); continue }
                     if await upload(jpeg: jpeg, camera: camera, credentials: credentials) { uploaded += 1 }
                 }

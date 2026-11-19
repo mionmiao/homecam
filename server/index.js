@@ -12,6 +12,7 @@ const port = Number(process.env.PORT || 3000);
 const dataDir = path.resolve(root, process.env.DATA_DIR || 'data');
 const photosDir = path.join(dataDir, 'photos');
 const dbFile = path.join(dataDir, 'homecam.json');
+const runtimeConfigFile = path.join(dataDir, 'runtime-config.json');
 const adminPassword = process.env.ADMIN_PASSWORD;
 const tokenSecret = process.env.TOKEN_SECRET;
 if (!adminPassword || !tokenSecret) throw new Error('ADMIN_PASSWORD and TOKEN_SECRET must be set in .env');
@@ -37,6 +38,33 @@ const verify = (token) => {
   try { const value = JSON.parse(Buffer.from(body, 'base64url')); return value.exp > Date.now() ? value : null; } catch { return null; }
 };
 const publicDevice = ({ secretHash, ...device }) => device;
+// 运行时配置：存在 data/runtime-config.json，改文件或调 PUT 接口即生效，无需重启、无需重装 App
+const defaultRuntimeConfig = {
+  schemaVersion: 1,
+  iceServers: null,          // null = 用服务端 .env 的 ICE_SERVERS
+  features: { photos: true, burst: true, screenLockCapture: true, cameraSwitch: true, photoUpload: true },
+  photoSettings: { burstCount: 5, intervalMs: 300, order: ['front', 'back'] },
+  captureThresholdSeconds: 10,   // 离开前台超过多少秒才拍照（区分下拉状态栏与锁屏）
+  ui: {}
+};
+function readRuntimeConfig() {
+  try {
+    if (!fs.existsSync(runtimeConfigFile)) return defaultRuntimeConfig;
+    const raw = JSON.parse(fs.readFileSync(runtimeConfigFile, 'utf8'));
+    return {
+      ...defaultRuntimeConfig, ...raw,
+      features: { ...defaultRuntimeConfig.features, ...(raw.features || {}) },
+      photoSettings: { ...defaultRuntimeConfig.photoSettings, ...(raw.photoSettings || {}) },
+      ui: { ...defaultRuntimeConfig.ui, ...(raw.ui || {}) }
+    };
+  } catch (e) { console.log('[config] parse failed, using defaults:', e.message); return defaultRuntimeConfig; }
+}
+function writeRuntimeConfig(patch) {
+  const next = { ...readRuntimeConfig(), ...patch };
+  fs.writeFileSync(runtimeConfigFile, JSON.stringify(next, null, 2), { mode: 0o600 });
+  console.log('[config] updated');
+  return next;
+}
 // 统一设备状态视图：所有下发到观看端的列表都带 online/status，避免状态错乱
 function deviceView(d) {
   return { ...publicDevice(d), online: deviceSockets.has(d.id), status: activeViews.has(d.id) ? 'streaming' : (deviceSockets.has(d.id) ? 'idle' : 'offline') };
@@ -59,6 +87,21 @@ app.post('/api/auth/login', (req, res) => {
 });
 app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(deviceView)));
 app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers }));
+// 运行时配置：App 启动拉取；管理员可改，改完立即生效
+app.get('/api/config', (_req, res) => {
+  const cfg = readRuntimeConfig();
+  res.json({ ...cfg, iceServers: cfg.iceServers || iceServers });
+});
+app.put('/api/config', requireUser, (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const patch = {};
+  if (body.iceServers !== undefined) patch.iceServers = body.iceServers;
+  if (body.features !== undefined) patch.features = { ...readRuntimeConfig().features, ...body.features };
+  if (body.photoSettings !== undefined) patch.photoSettings = { ...readRuntimeConfig().photoSettings, ...body.photoSettings };
+  if (body.captureThresholdSeconds !== undefined) patch.captureThresholdSeconds = Number(body.captureThresholdSeconds);
+  if (body.ui !== undefined) patch.ui = { ...readRuntimeConfig().ui, ...body.ui };
+  res.json(writeRuntimeConfig(patch));
+});
 // 设备上传照片：raw JPEG body，用 deviceId + deviceSecret 认证；每类只保留最新 50 张
 app.post('/api/photos', express.raw({ type: 'image/jpeg', limit: '10mb' }), (req, res) => {
   const deviceId = String(req.headers['x-device-id'] || '');

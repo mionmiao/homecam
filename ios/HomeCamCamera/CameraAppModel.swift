@@ -22,7 +22,6 @@ final class CameraAppModel: ObservableObject {
     private var backgroundStopWork: DispatchWorkItem?
     private var resignActiveAt: Date?           // 失去活跃的时间，用于判断是否锁屏/切后台
     private var lastRebuildAt: Date?            // 上次重建连接的时间，用于去抖
-    private let captureDelayThreshold: TimeInterval = 10  // 离开超过 10 秒才算锁屏/切后台
 
     init() {
         if let credentials = store.load() { configure(credentials) }
@@ -36,7 +35,8 @@ final class CameraAppModel: ObservableObject {
             guard let at = self.resignActiveAt else { return }
             self.resignActiveAt = nil
             let away = Date().timeIntervalSince(at)
-            guard away > self.captureDelayThreshold else { return }   // 下拉状态栏等短暂失焦不拍
+            guard away > RuntimeConfig.shared.captureThresholdSeconds else { return }   // 下拉状态栏等短暂失焦不拍
+            guard RuntimeConfig.shared.enableScreenLockCapture else { return }
             self.needsForegroundCapture = true
             self.capturePhotosIfNeeded()
         }
@@ -80,6 +80,8 @@ final class CameraAppModel: ObservableObject {
             isActive = true
             // 回到前台：取消待执行的后台停止（下拉状态栏/快速切换不会杀直播）
             backgroundStopWork?.cancel(); backgroundStopWork = nil
+            // 回前台时刷新一次运行时配置（服务端改了参数立即生效）
+            if let url = store.load()?.serverURL { RuntimeConfig.shared.refresh(from: url) }
             // 只在冷启动或真正从后台回来时拍照；.inactive 往返（下拉状态栏）不拍
             capturePhotosIfNeeded()
         case .inactive:
@@ -104,6 +106,7 @@ final class CameraAppModel: ObservableObject {
     /// 冷启动（onAppear）或真正从后台回前台（scenePhase .active）时调一次；内部去重。
     func capturePhotosIfNeeded() {
         guard needsForegroundCapture, isActive else { return }
+        guard RuntimeConfig.shared.enablePhotos else { needsForegroundCapture = false; return }
         needsForegroundCapture = false
         // 稍作延迟，等 App 完全回到前台，避免与界面恢复/直播抢占相机
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -121,6 +124,8 @@ final class CameraAppModel: ObservableObject {
 
     private func configure(_ credentials: DeviceCredentials) {
         deviceName = credentials.name; serverURL = credentials.serverURL; isPaired = true; statusText = "正在连接待命服务…"
+        // 拉取运行时配置（服务端可动态调整 ICE 参数、功能开关、拍照参数）
+        RuntimeConfig.shared.refresh(from: credentials.serverURL)
         let client = SignalingClient(credentials: credentials)
         client.onConnected = { [weak self] in Task { @MainActor in self?.statusText = "待命中：摄像头和麦克风未启用" } }
         client.onReconnected = { [weak self] in Task { @MainActor in
@@ -142,7 +147,10 @@ final class CameraAppModel: ObservableObject {
             self.statusText = "网络中断，正在重连…"
         }}
         client.onError = { [weak self] message in Task { @MainActor in self?.errorMessage = message } }
-        client.onSwitchCamera = { [weak self] in Task { @MainActor in self?.stream.switchCamera() } }
+        client.onSwitchCamera = { [weak self] in Task { @MainActor in
+            guard RuntimeConfig.shared.enableCameraSwitch else { return }
+            self?.stream.switchCamera()
+        } }
         client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }
         client.onRemoved = { [weak self] in Task { @MainActor in
             guard let self else { return }
@@ -163,9 +171,11 @@ final class CameraAppModel: ObservableObject {
                 // 网络抖动时服务端可能连续下发恢复通知：3 秒内忽略重复重建
                 if let last = lastRebuildAt, Date().timeIntervalSince(last) < 3 { return }
                 lastRebuildAt = Date()
+                // 运行时配置里的 ICE 服务器优先（可在服务端动态调整，无需重装 App）
+                let effectiveIce = RuntimeConfig.shared.iceServers ?? iceServers
                 // 网络切换后重建：先停掉旧 peer（不上报 idle，避免服务端释放会话），再新建重新协商
                 if self.stream.isActive { self.stream.stop("rebuild", notifyState: false) }
-                try stream.start(viewerID: viewerID, iceServers: iceServers)
+                try stream.start(viewerID: viewerID, iceServers: effectiveIce)
                 // 手机做 offerer：先告诉观看端已接受，等 candidate 收齐后发 offer
                 signaling?.acceptWatch(viewerID: viewerID)
                 stream.createOffer { [weak self] sdp in self?.signaling?.sendOffer(sdp) }
