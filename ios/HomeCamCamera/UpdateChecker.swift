@@ -34,17 +34,25 @@ enum UpdateChecker {
         Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0") ?? 0
     }
 
-    static func check(serverURL: URL, onResult: @escaping (UpdateInfo?) -> Void) {
+    /// 检查结果：latestBuild 用于版本行显示；update 仅在有新版时非空
+    struct Result {
+        let latestBuild: Int
+        let update: UpdateInfo?
+    }
+
+    static func check(serverURL: URL, onResult: @escaping (Result?) -> Void) {
         guard let url = URL(string: "api/version", relativeTo: serverURL) else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         request.cachePolicy = .reloadIgnoringLocalCacheData
         URLSession.shared.dataTask(with: request) { data, _, _ in
-            guard let data, let res = try? JSONDecoder().decode(Response.self, from: data),
-                  res.ready, res.build > localBuild, !res.ipaUrl.isEmpty else {
+            guard let data, let res = try? JSONDecoder().decode(Response.self, from: data), res.ready else {
                 onResult(nil); return
             }
-            onResult(UpdateInfo(build: res.build, version: res.version, notes: res.notes, ipaUrl: res.ipaUrl))
+            let update: UpdateInfo? = (res.build > localBuild && !res.ipaUrl.isEmpty)
+                ? UpdateInfo(build: res.build, version: res.version, notes: res.notes, ipaUrl: res.ipaUrl)
+                : nil
+            onResult(Result(latestBuild: res.build, update: update))
         }.resume()
     }
 

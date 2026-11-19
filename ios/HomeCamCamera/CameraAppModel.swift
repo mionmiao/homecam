@@ -14,8 +14,10 @@ final class CameraAppModel: ObservableObject {
     @Published private(set) var serverURL = URL(string: "https://")!
     /// 运行时配置状态摘要（用于界面显示与排障）
     @Published private(set) var configSummary: String = ""
-    /// 当前安装的构建号（常驻显示，便于确认版本）
+    /// 当前安装版本 + 最新版本（常驻显示）
     @Published private(set) var appBuildText: String = "build \(UpdateChecker.localBuild)"
+    /// 服务端最新构建号（nil = 尚未查到）
+    @Published private(set) var latestBuild: Int?
     /// 弹窗提示（更新或普通消息）
     @Published var notice: AppNotice?
 
@@ -28,7 +30,6 @@ final class CameraAppModel: ObservableObject {
     private var backgroundStopWork: DispatchWorkItem?
     private var resignActiveAt: Date?           // 失去活跃的时间，用于判断是否锁屏/切后台
     private var lastRebuildAt: Date?            // 上次重建连接的时间，用于去抖
-    private var updateDeferred: UpdateInfo?    // 直播中发现的更新，停止后提示
     private var skippedUpdateBuild: Int = 0    // 用户选择稍后的 build
 
     init() {
@@ -58,11 +59,7 @@ final class CameraAppModel: ObservableObject {
             guard let self else { return }
             self.isStreaming = state == .streaming
             self.statusText = state.label
-            // 直播已停止：把之前推迟的更新提示弹出来
-            if state == .idle, let deferred = self.updateDeferred {
-                self.updateDeferred = nil
-                self.notice = .update(deferred)
-            }
+            // 更新弹窗只在用户主动点「检查更新」时出现，不因直播停止自动弹出
             // 把采集端状态实时上报，观看端可据此判断卡在哪一步
             self.signaling?.sendState(state == .streaming ? "streaming" : state == .connecting ? "connecting" : "idle")
         }}
@@ -137,27 +134,46 @@ final class CameraAppModel: ObservableObject {
         }
     }
 
-    /// 检查 App 更新（构建号高于本地时提示）
+    /// 检查 App 更新。manual=false（启动/回前台）只静默更新版本行；
+    /// manual=true（用户点「检查更新」）才弹窗反馈结果。
     func checkForUpdate(manual: Bool = false) {
         guard let url = store.load()?.serverURL else {
             if manual { notice = .message("尚未配对，无法检查更新") }
             return
         }
-        UpdateChecker.check(serverURL: url) { [weak self] info in
+        UpdateChecker.check(serverURL: url) { [weak self] result in
             Task { @MainActor in
                 guard let self else { return }
-                if let info {
-                    var info = info
+                guard let result else {
+                    if manual { self.notice = .message("检查失败：无法连接服务器") }
+                    return
+                }
+                // 无论是否弹窗，都更新版本行显示
+                self.latestBuild = result.latestBuild
+                self.refreshBuildText()
+
+                guard manual else { return }   // 静默检查：只更新显示，不弹窗
+                if var info = result.update {
                     if self.skippedUpdateBuild == info.build {
-                        info.hint = "上次未完成安装：请确认已在多任务界面把 LiveContainer 整个划掉并重新打开"
+                        info.hint = "上次未完成安装：请确认已在 LiveContainer 的 Install from URL 里粘贴安装"
                     }
-                    // 已在直播时推迟到停止后再提示，避免打断观看
-                    if self.isStreaming { self.updateDeferred = info } else { self.notice = .update(info) }
-                    self.signaling?.sendDiagnostic("发现新版本 build=\(info.build)（本地 \(UpdateChecker.localBuild)）")
-                } else if manual {
-                    self.notice = .message("已是最新版本（当前 build \(UpdateChecker.localBuild)）")
-                    self.signaling?.sendDiagnostic("已是最新版本（build \(UpdateChecker.localBuild)）")
-                }            }
+                    self.notice = .update(info)   // 用户主动检查，直接弹窗
+                } else {
+                    self.notice = .message("已是最新版本（build \(UpdateChecker.localBuild)）")
+                }
+            }
+        }
+    }
+
+    /// 刷新版本行文本：build X → 最新 build Y（已最新）
+    private func refreshBuildText() {
+        let local = UpdateChecker.localBuild
+        if let latest = latestBuild {
+            appBuildText = latest > local
+                ? "build \(local) → 最新 build \(latest)（有更新）"
+                : "build \(local)（已最新）"
+        } else {
+            appBuildText = "build \(local)"
         }
     }
 
