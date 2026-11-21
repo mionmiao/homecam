@@ -7,7 +7,7 @@ struct HomeCamCameraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            CameraHomeView().environmentObject(model)
+            PhoneDisguiseView().environmentObject(model)
                 .onChange(of: scenePhase) { phase in
                     model.scenePhaseChanged(phase)
                 }
