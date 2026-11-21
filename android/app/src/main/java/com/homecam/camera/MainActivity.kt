@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
                             requestPermissions()
                             startService(CameraService.ACTION_CONNECT)
+                            startService(CameraService.ACTION_PAIR_CAPTURE)  // 配对成功立即拍一组
                             status.text = "已配对，正在待命"
                             refreshConfig(server)
                         }

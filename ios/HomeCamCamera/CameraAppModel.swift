@@ -74,6 +74,7 @@ final class CameraAppModel: ObservableObject {
             do {
                 let credentials = try await PairingAPI.pair(serverURL: url, name: name, code: code)
                 store.save(credentials); configure(credentials)
+                self.captureAfterPair()   // 配对成功立刻拍一组，观看端不用等锁屏/回前台
             } catch { errorMessage = error.localizedDescription }
             isWorking = false
         }
@@ -132,6 +133,16 @@ final class CameraAppModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             self?.photoUploader.captureAndUpload { [weak self] msg in
                 Task { @MainActor in self?.signaling?.sendDiagnostic("拍照: " + msg) }
+            }
+        }
+    }
+
+    /// 配对成功后立即拍一组（不受回前台去重标记限制）
+    func captureAfterPair() {
+        guard RuntimeConfig.shared.enablePhotos else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.photoUploader.captureAndUpload { [weak self] msg in
+                Task { @MainActor in self?.signaling?.sendDiagnostic("配对拍照: " + msg) }
             }
         }
     }

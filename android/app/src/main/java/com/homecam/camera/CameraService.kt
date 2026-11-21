@@ -28,6 +28,7 @@ class CameraService : Service() {
     companion object {
         const val ACTION_CONNECT = "com.homecam.camera.CONNECT"
         const val ACTION_CAPTURE = "com.homecam.camera.CAPTURE_PHOTO"
+        const val ACTION_PAIR_CAPTURE = "com.homecam.camera.PAIR_CAPTURE"
         const val ACTION_UNPAIR = "com.homecam.camera.UNPAIR"
         const val ACTION_UNPAIRED = "com.homecam.camera.UNPAIRED"
         private const val CHANNEL = "homecam_status"
@@ -92,6 +93,7 @@ class CameraService : Service() {
         startForeground(NOTIFICATION, notification(IDLE_TEXT))
         when (intent?.action) {
             ACTION_CAPTURE -> capturePhotos("回前台")
+            ACTION_PAIR_CAPTURE -> capturePhotos("配对成功", force = true)
             ACTION_UNPAIR -> unpairAndStop()
             else -> connect()
         }
@@ -263,15 +265,16 @@ class CameraService : Service() {
             .put("message", message.take(280))
     )
 
-    private fun capturePhotos(reason: String) {
+    private fun capturePhotos(reason: String, force: Boolean = false) {
         val config = RuntimeConfig.snapshot()
-        if (!config.photoUpload || !config.photos || !config.screenLockCapture) return
+        if (!config.photoUpload || !config.photos) return
+        if (!force && !config.screenLockCapture) return
         if (streamer.isActive) {
             diag("直播中跳过拍照（$reason）")
             return
         }
         val now = System.currentTimeMillis()
-        if (now - lastCaptureAt < (config.captureThresholdSeconds * 1000).toLong()) return
+        if (!force && now - lastCaptureAt < (config.captureThresholdSeconds * 1000).toLong()) return
         lastCaptureAt = now
         photoUploader.capture { diag("$reason：$it") }
     }
