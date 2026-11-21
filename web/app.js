@@ -95,14 +95,14 @@ function escapeHtml(value) { const div = document.createElement('div'); div.text
 async function loadDevices() { const devices = await api('/api/devices'); devices.forEach((d) => lastDeviceStatus.set(d.id, d.status)); renderDevices(devices); }
 async function commitRename(device, name) {
   name = String(name || '').trim();
-  if (!name) { alert('设备名不能为空'); return; }
+  if (!name) { setPairNotice('设备名不能为空', 'error'); return; }
   editingDeviceId = null;
   if (name === device.name) return void loadDevices();
   try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'PATCH', body: JSON.stringify({ name }) }); }
-  catch (e) { alert(e.message); }
+  catch (e) { setPairNotice(e.message, 'error'); }
   await loadDevices();
 }
-async function removeDevice(device) { const stale = !!device.unpairedAt; if (!confirm(stale ? `移除已失效设备「${device.name}」？\n仅从列表删除记录，手机端无需操作。` : `删除设备「${device.name}」？\n手机端会收到通知并解除配对，需要重新配对才能使用。`)) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' }); if (selected?.id === device.id) { selected = null; cleanup(); clearPhotos(); } await loadDevices(); } catch (e) { alert(e.message); } }
+async function removeDevice(device) { const stale = !!device.unpairedAt; if (!confirm(stale ? `移除已失效设备「${device.name}」？\n仅从列表删除记录，手机端无需操作。` : `删除设备「${device.name}」？\n手机端会收到通知并解除配对，需要重新配对才能使用。`)) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' }); if (selected?.id === device.id) { selected = null; cleanup(); clearPhotos(); } await loadDevices(); } catch (e) { setPairNotice(e.message, 'error'); } }
 function connect() { socket = io({ withCredentials: true }); socket.on('connect', () => { ui.connection.textContent = '已连接'; loadDevices(); }); socket.on('connect_error', (err) => { if (err?.message === 'Unauthorized') return expire(); ui.connection.textContent = '连接失败'; }); socket.on('devices', renderDevices); socket.on('device:status', ({ deviceId, status }) => { handleDeviceStatus(deviceId, status); if (selected?.id === deviceId) { selected.status = status; ui.status.textContent = `${selected.name}：${statusLabel(status)}`; } loadDevices(); }); socket.on('watch:accepted', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机已接受，等待其 offer'); }); socket.on('signal', async ({ fromId, data }) => receiveSignal(fromId, data)); socket.on('watch:stopped', () => cleanup()); socket.on('watch:resume', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机网络切换，准备重新协商'); setWatchUi(true); ui.status.textContent = '手机网络切换中，正在重连…'; clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { if (peer && peer.connectionState !== 'connected') { appendDiag('重建前清理旧连接'); cleanup(); setWatchUi(true); } }, 3000); }); socket.on('device:removed', ({ deviceId }) => { if (selected?.id === deviceId) { selected = null; cleanup(); clearPhotos(); } loadDevices(); }); socket.on('device:unpaired', ({ deviceId, name }) => { const wasSelected = selected?.id === deviceId; if (wasSelected) { cleanup(); selected.unpairedAt = Date.now(); selected.status = 'unpaired'; ui.status.textContent = `${selected.name}：已失效（手机端已解绑）`; } appendDiag(`设备 ${name || deviceId.slice(0, 8)} 已在手机端解除配对${wasSelected ? '，已停止观看（设备保留为失效）' : ''}`); loadDevices(); }); socket.on('pairing:result', ({ status, code, name }) => { if (!pairingCode || (code && code !== pairingCode)) return; clearInterval(pairingTimer); pairingTimer = null; pairingCode = ''; if (status === 'paired') { setPairNotice(`配对成功${name ? '：' + name : ''}`, 'success'); loadDevices(); } }); socket.on('device:diagnostic', ({ deviceId, message }) => { if (deviceId === selected?.id) appendDiag('手机端: ' + message); }); }
 function initPeer(iceServers) { peer = new RTCPeerConnection({ iceServers }); pendingCandidates = []; appendDiag(`ICE servers: ${iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(',')).join(' | ')}`); peer.onicecandidate = ({ candidate }) => { if (candidate) { const t = (candidate.type || '').toLowerCase(); appendDiag(`my candidate: ${t || '?'} ${String(candidate.candidate).slice(0, 40)}`); socket.emit('signal', { targetId: selected.id, data: { type: 'candidate', candidate } }); } }; peer.ontrack = ({ streams }) => { ui.video.srcObject = streams[0]; ui.status.textContent = '正在观看'; appendDiag('ontrack: 收到媒体流'); }; peer.onconnectionstatechange = () => { const s = peer?.connectionState; appendDiag(`peer: ${s}`); if (s === 'closed') cleanup(); else if (s === 'failed' || s === 'disconnected') setTimeout(() => { if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) { appendDiag('ICE 断开超时，清理'); cleanup(); } }, 25000); }; peer.oniceconnectionstatechange = () => appendDiag(`ice: ${peer.iceConnectionState}`); }
 async function handleOffer(sdp) {
@@ -204,7 +204,7 @@ function copyDiag() {
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
   else fallbackCopy(text, done);
 }
-function fallbackCopy(text, done) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { alert(text); } ta.remove(); }
+function fallbackCopy(text, done) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { setPairNotice('复制失败，请手动复制：' + text, 'error'); } ta.remove(); }
 document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('click', (e) => { if (e.target.id === 'copyDiagButton') e.preventDefault(); });
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
 function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; setTimeout(checkWebVersion, 500); }
@@ -219,7 +219,7 @@ $('#togglePassword').onclick = () => { const input = $('#password'); const show 
 $('#logoutButton').onclick = logout;
 $('#revokeAllButton').onclick = async () => {
   if (!confirm('撤销所有已登录会话？所有人需重新输入密码。')) return;
-  try { await api('/api/auth/revoke-all', { method: 'POST' }); expire(); } catch (e) { alert(e.message); }
+  try { await api('/api/auth/revoke-all', { method: 'POST' }); expire(); } catch (e) { setPairNotice(e.message, 'error'); }
 };
 $('#copyDiagButton').onclick = copyDiag;
 const closePwModal = () => { $('#passwordModal').hidden = true; $('#pwResult').hidden = true; $('#pwCurrent').value = ''; $('#pwNext').value = ''; };
@@ -254,17 +254,16 @@ $('#pairButton').onclick = async () => {
       setPairNotice(`在手机摄像头应用输入此配对码：${code}（剩余 ${remain}）`);
     };
     pairingTimer = setInterval(tick, 1000); tick();
-  } catch (e) { alert(e.message); }
+  } catch (e) { setPairNotice(e.message, 'error'); }
 };
 $('#refreshButton').onclick = loadDevices;
-ui.watch.onclick = () => { if (selected?.unpairedAt) return alert('设备已失效（手机端已解绑），请删除后重新配对'); socket.emit('watch:start', { deviceId: selected.id }, (reply) => { if (reply.error) return alert(reply.error); setWatchUi(true); ui.status.textContent = '正在连接手机…'; }); };
+ui.watch.onclick = () => { if (selected?.unpairedAt) return void setPairNotice('设备已失效（手机端已解绑），请删除后重新配对', 'error'); socket.emit('watch:start', { deviceId: selected.id }, (reply) => { if (reply.error) return void setPairNotice(reply.error, 'error'); setWatchUi(true); ui.status.textContent = '正在连接手机…'; }); };
 async function sendNotice(device) {
-  if (!device || device.unpairedAt || device.status !== 'idle') return alert('仅可在设备待命（在线且未观看）时发送来电提醒');
-  if (!confirm(`向「${device.name}」发送来电提醒？手机下次打开 App 时会显示。`)) return;
+  if (!device || device.unpairedAt || device.status !== 'idle') return void setPairNotice('仅可在设备待命（在线且未观看）时发送来电提醒', 'error');
   try {
     await api(`/api/devices/${encodeURIComponent(device.id)}/notify`, { method: 'POST' });
-    ui.status.textContent = `${device.name}：已发送来电提醒（手机下次打开 App 时显示）`;
-  } catch (e) { alert(e.message); }
+    setPairNotice(`已向「${device.name}」发送来电提醒，手机下次打开 App 时显示`, 'success');
+  } catch (e) { setPairNotice(e.message, 'error'); }
 }
 ui.stop.onclick = stopWatch;
 $('#switchCameraButton').onclick = () => { if (selected && watching) { socket.emit('camera:switch', { deviceId: selected.id }); appendDiag('已发送切换摄像头指令'); } };
