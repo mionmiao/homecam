@@ -61,6 +61,12 @@ final class RuntimeConfig {
     private func loadCache() {
         guard let data = defaults.data(forKey: cacheKey),
               let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return }
+        var payload = payload
+        // 旧缓存里的静态 TURN 凭据已失效，清掉后回退到信令下发的临时凭据
+        if payload.iceServers != nil {
+            payload.iceServers = nil
+            saveCache(payload)
+        }
         apply(payload)
         lastUpdatedAt = defaults.object(forKey: cacheTimeKey) as? Date
         lastStatus = "已加载本地缓存"

@@ -43,7 +43,7 @@ class PhotoUploader(private val context: Context) {
         val prefs = context.getSharedPreferences("homecam", Context.MODE_PRIVATE)
         val serverUrl = prefs.getString("serverUrl", null)
         val deviceId = prefs.getString("deviceId", null)
-        val deviceSecret = prefs.getString("deviceSecret", null)
+        val deviceSecret = SecureStore.getSecret(context)
         if (serverUrl.isNullOrBlank() || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
             onLog("未配对，跳过拍照")
             return

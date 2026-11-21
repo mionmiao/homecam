@@ -1,16 +1,67 @@
 import Foundation
 import UIKit
+import Security
 
 struct DeviceCredentials: Codable {
     let serverURL: URL; let deviceID: String; let deviceSecret: String; let name: String
     var iceServers: [IceServerConfiguration]?
 }
 
+/// 配对凭据存 Keychain（ThisDeviceOnly，不进备份），不再明文写 UserDefaults。
+/// 旧版本留在 UserDefaults 的凭据会在首次读取时自动迁移并清除。
 final class DeviceStore {
-    private let key = "homecam-device-credentials"
-    func load() -> DeviceCredentials? { UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(DeviceCredentials.self, from: $0) } }
-    func save(_ credentials: DeviceCredentials) { UserDefaults.standard.set(try? JSONEncoder().encode(credentials), forKey: key) }
-    func clear() { UserDefaults.standard.removeObject(forKey: key) }
+    private let account = "homecam-device-credentials"
+    private let legacyKey = "homecam-device-credentials"
+
+    private var baseQuery: [String: Any] {
+        let service = Bundle.main.bundleIdentifier ?? "com.homecam.camera"
+        return [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+    }
+
+    private var lookupQuery: [String: Any] {
+        var q = baseQuery
+        q.removeValue(forKey: kSecAttrAccessible as String)
+        return q
+    }
+
+    func load() -> DeviceCredentials? {
+        var query = lookupQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data,
+           let creds = try? JSONDecoder().decode(DeviceCredentials.self, from: data) {
+            return creds
+        }
+        // 迁移旧 UserDefaults 明文凭据
+        guard let legacy = UserDefaults.standard.data(forKey: legacyKey),
+              let creds = try? JSONDecoder().decode(DeviceCredentials.self, from: legacy) else { return nil }
+        save(creds)
+        UserDefaults.standard.removeObject(forKey: legacyKey)
+        return creds
+    }
+
+    func save(_ credentials: DeviceCredentials) {
+        guard let data = try? JSONEncoder().encode(credentials) else { return }
+        var attrs = baseQuery
+        attrs[kSecValueData as String] = data
+        let status = SecItemAdd(attrs as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            SecItemUpdate(lookupQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+        UserDefaults.standard.removeObject(forKey: legacyKey)
+    }
+
+    func clear() {
+        SecItemDelete(lookupQuery as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: legacyKey)
+    }
 }
 
 enum PairingAPI {

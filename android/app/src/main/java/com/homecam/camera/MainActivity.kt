@@ -67,12 +67,13 @@ class MainActivity : AppCompatActivity() {
                     OkHttpClient().newCall(request).execute().use { response ->
                         if (!response.isSuccessful) throw Exception("配对失败：${response.code}")
                         val result = JSONObject(response.body!!.string())
+                        val deviceSecret = result.getString("deviceSecret")
                         prefs.edit()
                             .putString("serverUrl", server)
                             .putString("deviceId", result.getJSONObject("device").getString("id"))
-                            .putString("deviceSecret", result.getString("deviceSecret"))
                             .putString("name", name.text.toString())
                             .apply()
+                        SecureStore.saveSecret(this@MainActivity, deviceSecret)
                         runOnUiThread {
                             requestPermissions()
                             startService(CameraService.ACTION_CONNECT)

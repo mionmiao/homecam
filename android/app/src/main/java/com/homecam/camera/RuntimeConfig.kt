@@ -57,7 +57,13 @@ object RuntimeConfig {
         val raw = prefs?.getString(KEY_CACHE, null)
         if (!raw.isNullOrBlank()) {
             try {
-                apply(JSONObject(raw), "已加载本地缓存", System.currentTimeMillis())
+                val cached = JSONObject(raw)
+                // 旧缓存里的静态 TURN 凭据已失效，清掉后回退到信令下发的临时凭据
+                if (cached.has("iceServers")) {
+                    cached.put("iceServers", JSONArray())
+                    prefs?.edit()?.putString(KEY_CACHE, cached.toString())?.apply()
+                }
+                apply(cached, "已加载本地缓存", System.currentTimeMillis())
             } catch (_: Exception) {
                 // 缓存损坏时用默认值
             }

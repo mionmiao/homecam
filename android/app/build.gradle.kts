@@ -14,6 +14,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    buildTypes {
+        // CI 出的是 debug 包，但关闭 debuggable，避免 ADB run-as 直接读取应用沙盒
+        getByName("debug") { isDebuggable = false }
+    }
 }
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")

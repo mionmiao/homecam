@@ -104,7 +104,7 @@ class CameraService : Service() {
         if (::socket.isInitialized && socket.connected()) return
         val serverUrl = prefs.getString("serverUrl", null)?.trim()?.removeSuffix("/")
         val deviceId = prefs.getString("deviceId", null)
-        val deviceSecret = prefs.getString("deviceSecret", null)
+        val deviceSecret = SecureStore.getSecret(this)
         if (serverUrl.isNullOrBlank() || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) return
         if (!serverUrl.startsWith("https://")) { updateNotification("服务器地址必须使用 HTTPS，请重新配对"); return }
         try {
@@ -180,7 +180,8 @@ class CameraService : Service() {
             if (RuntimeConfig.snapshot().cameraSwitch) streamer.switchCamera()
         }
         socket.on("device:removed") { args ->
-            prefs.edit().remove("deviceId").remove("deviceSecret").apply()
+            prefs.edit().remove("deviceId").apply()
+            SecureStore.clearSecret(this@CameraService)
             streamer.stop("removed", notifyState = false)
             viewerId = null
             sendBroadcast(Intent(ACTION_UNPAIRED))
@@ -237,7 +238,8 @@ class CameraService : Service() {
         val payload = JSONObject().put("deviceId", prefs.getString("deviceId", ""))
         val finish = Runnable {
             emit("device:unpair", payload)   // 服务端从 socket 身份取设备，无需等待回执
-            prefs.edit().remove("deviceId").remove("deviceSecret").apply()
+            prefs.edit().remove("deviceId").apply()
+            SecureStore.clearSecret(this@CameraService)
             handler.postDelayed({ stopSelf() }, 300)  // 留时间给 emit 发出
         }
         if (!::socket.isInitialized || !socket.connected()) {
