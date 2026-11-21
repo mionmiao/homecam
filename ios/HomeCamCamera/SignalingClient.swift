@@ -62,8 +62,9 @@ final class SignalingClient {
         socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
         socket.on("camera:switch") { [weak self] _, _ in self?.onSwitchCamera?() }
         socket.on("device:notice") { [weak self] data, _ in
-            let title = data.first?["title"] as? String ?? "您有一条未接来电"
-            let body = data.first?["body"] as? String ?? "点击查看"
+            let payload = data.first as? [String: Any]
+            let title = payload?["title"] as? String ?? "您有一条未接来电"
+            let body = payload?["body"] as? String ?? "点击查看"
             self?.onNotice?(title, body)
         }
         // 网络接口变化（WiFi↔蜂窝）时立即重连信令，不等 Socket.IO 心跳超时（约 45 秒）
