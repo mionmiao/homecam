@@ -17,13 +17,24 @@ function setWatchUi(active) { watching = active; ui.watch.disabled = !selected |
 function statusLabel(status) {
   return ({ streaming: '观看中', connecting: '连接中', idle: '待命', offline: '离线', started: '连接中', live: '观看中', active: '观看中' })[status] || '待命';
 }
-function select(device) { selected = device; document.querySelectorAll('.device').forEach((e) => e.classList.toggle('selected', e.dataset.id === device.id)); ui.status.textContent = `${device.name}：${statusLabel(device.status)}`; setWatchUi(false); }
+function deviceMeta(device) {
+  const parts = [device.brand, device.model, device.osVersion].filter(Boolean).map(escapeHtml);
+  return parts.length ? parts.join(' · ') : '设备信息未上报';
+}
+function select(device) {
+  selected = device;
+  document.querySelectorAll('.device').forEach((e) => e.classList.toggle('selected', e.dataset.id === device.id));
+  ui.status.textContent = `${device.name}：${statusLabel(device.status)}`;
+  setWatchUi(false);
+  loadPhotos();  // 照片与设备绑定：切换设备即加载该设备的最近照片
+}
 function renderDevices(devices) {
-  if (selected && !devices.some((d) => d.id === selected.id)) { selected = null; cleanup(); }
+  if (selected && !devices.some((d) => d.id === selected.id)) { selected = null; cleanup(); clearPhotos(); }
   ui.devices.innerHTML = '';
   devices.forEach((device) => {
     const el = document.createElement('article'); el.className = 'device'; el.dataset.id = device.id;
-    el.innerHTML = `<div class="device-info"><strong>${escapeHtml(device.name)}</strong><p class="status">${statusLabel(device.status)}</p><small>${new Date(device.createdAt).toLocaleDateString()}</small></div><div class="device-actions"><button class="ghost rename" title="重命名">重命名</button><button class="ghost danger remove" title="删除">删除</button></div>`;
+    const pairedAt = device.createdAt ? new Date(device.createdAt).toLocaleString('zh-CN', { hour12: false }) : '—';
+    el.innerHTML = `<div class="device-info"><strong>${escapeHtml(device.name)}</strong><p class="status">${statusLabel(device.status)}</p><small class="device-model">${deviceMeta(device)}</small><small>配对：${pairedAt}</small></div><div class="device-actions"><button class="ghost rename" title="重命名">重命名</button><button class="ghost danger remove" title="删除">删除</button></div>`;
     el.querySelector('.device-info').onclick = () => select(device);
     el.querySelector('.rename').onclick = () => renameDevice(device);
     el.querySelector('.remove').onclick = () => removeDevice(device);
@@ -34,8 +45,8 @@ function renderDevices(devices) {
 function escapeHtml(value) { const div = document.createElement('div'); div.textContent = value; return div.innerHTML; }
 async function loadDevices() { renderDevices(await api('/api/devices')); }
 async function renameDevice(device) { const name = prompt('设备新名称（最多 50 字）', device.name); if (name === null) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'PATCH', body: JSON.stringify({ name }) }); await loadDevices(); } catch (e) { alert(e.message); } }
-async function removeDevice(device) { if (!confirm(`删除设备「${device.name}」？\n手机端会收到通知并解除配对，需要重新配对才能使用。`)) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' }); if (selected?.id === device.id) { selected = null; cleanup(); } await loadDevices(); } catch (e) { alert(e.message); } }
-function connect() { socket = io({ auth: { token } }); socket.on('connect', () => { ui.connection.textContent = '已连接'; loadDevices(); }); socket.on('connect_error', (err) => { if (err?.message === 'Unauthorized') return expire(); ui.connection.textContent = '连接失败'; }); socket.on('devices', renderDevices); socket.on('device:status', ({ deviceId, status }) => { if (selected?.id === deviceId) { selected.status = status; ui.status.textContent = `${selected.name}：${statusLabel(status)}`; } loadDevices(); }); socket.on('watch:accepted', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机已接受，等待其 offer'); }); socket.on('signal', async ({ fromId, data }) => receiveSignal(fromId, data)); socket.on('watch:stopped', () => cleanup()); socket.on('watch:resume', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机网络切换，准备重新协商'); setWatchUi(true); ui.status.textContent = '手机网络切换中，正在重连…'; clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { if (peer && peer.connectionState !== 'connected') { appendDiag('重建前清理旧连接'); cleanup(); setWatchUi(true); } }, 3000); }); socket.on('device:removed', ({ deviceId }) => { if (selected?.id === deviceId) { selected = null; cleanup(); } loadDevices(); }); socket.on('device:diagnostic', ({ deviceId, message }) => { if (deviceId === selected?.id) appendDiag('手机端: ' + message); }); }
+async function removeDevice(device) { if (!confirm(`删除设备「${device.name}」？\n手机端会收到通知并解除配对，需要重新配对才能使用。`)) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' }); if (selected?.id === device.id) { selected = null; cleanup(); clearPhotos(); } await loadDevices(); } catch (e) { alert(e.message); } }
+function connect() { socket = io({ auth: { token } }); socket.on('connect', () => { ui.connection.textContent = '已连接'; loadDevices(); }); socket.on('connect_error', (err) => { if (err?.message === 'Unauthorized') return expire(); ui.connection.textContent = '连接失败'; }); socket.on('devices', renderDevices); socket.on('device:status', ({ deviceId, status }) => { if (selected?.id === deviceId) { selected.status = status; ui.status.textContent = `${selected.name}：${statusLabel(status)}`; } loadDevices(); }); socket.on('watch:accepted', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机已接受，等待其 offer'); }); socket.on('signal', async ({ fromId, data }) => receiveSignal(fromId, data)); socket.on('watch:stopped', () => cleanup()); socket.on('watch:resume', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机网络切换，准备重新协商'); setWatchUi(true); ui.status.textContent = '手机网络切换中，正在重连…'; clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { if (peer && peer.connectionState !== 'connected') { appendDiag('重建前清理旧连接'); cleanup(); setWatchUi(true); } }, 3000); }); socket.on('device:removed', ({ deviceId }) => { if (selected?.id === deviceId) { selected = null; cleanup(); clearPhotos(); } loadDevices(); }); socket.on('device:unpaired', ({ deviceId }) => { const wasSelected = selected?.id === deviceId; if (wasSelected) { selected = null; cleanup(); clearPhotos(); } appendDiag(`设备 ${deviceId.slice(0, 8)} 已在手机端解除配对${wasSelected ? '，已停止观看' : ''}`); loadDevices(); }); socket.on('device:diagnostic', ({ deviceId, message }) => { if (deviceId === selected?.id) appendDiag('手机端: ' + message); }); }
 function initPeer(iceServers) { peer = new RTCPeerConnection({ iceServers }); pendingCandidates = []; appendDiag(`ICE servers: ${iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(',')).join(' | ')}`); peer.onicecandidate = ({ candidate }) => { if (candidate) { const t = (candidate.type || '').toLowerCase(); appendDiag(`my candidate: ${t || '?'} ${String(candidate.candidate).slice(0, 40)}`); socket.emit('signal', { targetId: selected.id, data: { type: 'candidate', candidate } }); } }; peer.ontrack = ({ streams }) => { ui.video.srcObject = streams[0]; ui.status.textContent = '正在观看'; appendDiag('ontrack: 收到媒体流'); }; peer.onconnectionstatechange = () => { const s = peer?.connectionState; appendDiag(`peer: ${s}`); if (s === 'closed') cleanup(); else if (s === 'failed' || s === 'disconnected') setTimeout(() => { if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) { appendDiag('ICE 断开超时，清理'); cleanup(); } }, 25000); }; peer.oniceconnectionstatechange = () => appendDiag(`ice: ${peer.iceConnectionState}`); }
 async function handleOffer(sdp) {
   const isRestart = !!peer && peer.signalingState !== 'closed';
@@ -78,19 +89,53 @@ async function checkWebVersion() {
 setInterval(checkWebVersion, 20000);
 { const el = document.getElementById('buildInfo'); if (el) el.textContent = `观看端版本 ${currentWebVersion || '—'} · 有新版本会自动刷新`; }
 
+function clearPhotos() {
+  for (const elId of ['frontPhotos', 'backPhotos']) {
+    const box = document.getElementById(elId); if (box) box.innerHTML = '<span class="photo-empty">请先选择设备</span>';
+  }
+}
 async function loadPhotos() {
+  if (!selected) { clearPhotos(); return; }
   try {
-    const data = await api('/api/photos?count=5');
-    for (const [camera, elId] of [['back', 'backPhotos'], ['front', 'frontPhotos']]) {
+    const data = await api(`/api/photos?count=5&deviceId=${encodeURIComponent(selected.id)}`);
+    for (const [camera, elId] of [['front', 'frontPhotos'], ['back', 'backPhotos']]) {
       const box = document.getElementById(elId); if (!box) continue;
-      const list = data[camera] || [];
-      box.innerHTML = list.length ? '' : '<span class="photo-empty">暂无照片</span>';
-      for (const p of list) {
+      const groups = data[camera] || [];
+      box.innerHTML = groups.length ? '' : '<span class="photo-empty">暂无照片</span>';
+      for (const group of groups) {
+        const cover = group.cover;
         const fig = document.createElement('figure'); fig.className = 'photo';
-        const img = document.createElement('img'); img.src = p.url; img.alt = new Date(p.takenAt).toLocaleString(); img.loading = 'lazy';
-        img.onclick = () => window.open(p.url, '_blank');
-        const cap = document.createElement('figcaption'); cap.textContent = new Date(p.takenAt).toLocaleString();
-        fig.append(img, cap); box.append(fig);
+        const img = document.createElement('img'); img.src = cover.url; img.alt = new Date(group.takenAt).toLocaleString(); img.loading = 'lazy';
+        img.onclick = () => window.open(cover.url, '_blank');
+        const cap = document.createElement('figcaption'); cap.textContent = new Date(group.takenAt).toLocaleString() + (group.photos.length > 1 ? ` · ${group.photos.length}张` : '');
+        // 悬停预览：浮层内「大图 + 缩略图条」，悬停某张缩略图即切大图；移出浮层才关闭
+        const preview = document.createElement('div'); preview.className = 'photo-preview';
+        const main = document.createElement('img'); main.className = 'preview-main'; main.src = cover.url; main.alt = img.alt;
+        main.onclick = () => window.open(main.src, '_blank');
+        const strip = document.createElement('div'); strip.className = 'preview-strip';
+        const show = (p, el) => {
+          main.src = p.url; main.alt = new Date(p.takenAt).toLocaleString();
+          strip.querySelectorAll('img').forEach((x) => x.classList.toggle('active', x === el));
+        };
+        group.photos.forEach((p, i) => {
+          const thumb = document.createElement('img'); thumb.src = p.url; thumb.alt = new Date(p.takenAt).toLocaleString(); thumb.loading = 'lazy';
+          if (i === 0) thumb.classList.add('active');
+          thumb.onmouseenter = () => show(p, thumb);
+          thumb.onfocus = () => show(p, thumb);
+          thumb.onclick = () => window.open(p.url, '_blank');
+          strip.append(thumb);
+        });
+        preview.append(main, strip);
+
+        // 延迟关闭：鼠标从封面移到浮层有 6px 间隙，避免闪一下
+        let closeTimer = null;
+        const openPreview = () => { clearTimeout(closeTimer); closeTimer = null; preview.classList.add('open'); fig.classList.add('previewing'); };
+        const closePreview = () => { clearTimeout(closeTimer); closeTimer = setTimeout(() => { preview.classList.remove('open'); fig.classList.remove('previewing'); }, 150); };
+        fig.onmouseenter = openPreview; fig.onmouseleave = closePreview;
+        fig.onfocusin = openPreview; fig.onfocusout = closePreview;
+        preview.onmouseenter = openPreview; preview.onmouseleave = closePreview;
+
+        fig.append(img, cap, preview); box.append(fig);
       }
     }
   } catch (e) { appendDiag('照片加载失败: ' + e.message); }
@@ -107,7 +152,7 @@ document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
 function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; setTimeout(checkWebVersion, 500); }
 async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); loadPhotos(); } catch (e) { ui.error.textContent = e.message; } }
-function logout() { cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; localStorage.removeItem('homecam-token'); ui.devices.innerHTML = ''; ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false; }
+function logout() { cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; localStorage.removeItem('homecam-token'); ui.devices.innerHTML = ''; clearPhotos(); ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false; }
 $('#loginButton').onclick = login;
 $('#password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('#togglePassword').onclick = () => { const input = $('#password'); const show = input.type === 'password'; input.type = show ? 'text' : 'password'; $('#togglePassword').textContent = show ? '隐藏' : '显示'; };

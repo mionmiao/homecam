@@ -20,6 +20,8 @@
 
 ## Android
 
-用 Android Studio 打开 `android/`，同步 Gradle 后安装到作为摄像头的手机。在应用中输入服务器 HTTPS 地址和网页端生成的一次性配对码。
+用 Android Studio 打开 `android/`，同步 Gradle 后安装到作为摄像头的手机。在应用中输入服务器 HTTPS 地址和网页端生成的一次性配对码。也可在 GitHub Release 的 `android-debug` 中直接下载 Debug APK 安装（需允许未知来源）。
+
+解锁手机后会自动用前后置各拍 5 张并上传（直播中跳过）；运行时参数（ICE、拍照开关/连拍参数、阈值）由服务端 `/api/config` 下发，改完在应用内点「刷新运行时配置」即可生效。
 
 > iOS 摄像头端已实现（见 `ios/README.md`），通过 LiveContainer + SideStore 用免费 Apple ID 侧载，构建产出的未签名 IPA 在 GitHub Release 的 `ios-unsigned` 中下载。iOS 不允许可靠地在后台被远程唤醒并持续开启摄像头，因此 iOS 端只承诺前台待命：配对后维持待命连接，开始观看才启用采集，切到后台立即停止。

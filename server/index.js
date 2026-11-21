@@ -214,7 +214,9 @@ app.put('/api/config', requireUser, (req, res) => {
   if (body.ui !== undefined) patch.ui = { ...readRuntimeConfig().ui, ...body.ui };
   res.json(writeRuntimeConfig(patch));
 });
-// 设备上传照片：raw JPEG body，用 deviceId + deviceSecret 认证；每类只保留最新 50 张
+// 照片按设备隔离：photos/<deviceId>/<camera>/。旧版照片在 photos/<camera>/，读取时兼容回退。
+const devicePhotosDir = (deviceId, camera) => path.join(photosDir, deviceId, camera);
+// 设备上传照片：raw JPEG body，用 deviceId + deviceSecret 认证；每台每类只保留最新 50 张
 app.post('/api/photos', express.raw({ type: 'image/jpeg', limit: '10mb' }), (req, res) => {
   const deviceId = String(req.headers['x-device-id'] || '');
   const secret = String(req.headers['x-device-secret'] || '');
@@ -223,7 +225,7 @@ app.post('/api/photos', express.raw({ type: 'image/jpeg', limit: '10mb' }), (req
   if (!device || !secret || digest(secret) !== device.secretHash) return res.status(401).json({ error: 'Unauthorized' });
   const body = req.body;
   if (!Buffer.isBuffer(body) || body.length < 100 || body.length > 10 * 1024 * 1024) return res.status(400).json({ error: 'Invalid image' });
-  const dir = path.join(photosDir, camera);
+  const dir = devicePhotosDir(deviceId, camera);
   fs.mkdirSync(dir, { recursive: true });
   const name = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.jpg`;
   fs.writeFileSync(path.join(dir, name), body, { mode: 0o644 });
@@ -234,17 +236,36 @@ app.post('/api/photos', express.raw({ type: 'image/jpeg', limit: '10mb' }), (req
   for (const old of files.slice(50)) fs.unlinkSync(path.join(dir, old.f));
   res.status(201).json({ ok: true, name, camera });
 });
-// 观看端取最近 N 张照片元信息（默认每类 5 张）
+// 把按时序排列的照片切成连拍组：相邻超过 GAP 视为新组（连拍 300ms 间隔，组间远大于此）
+const PHOTO_GROUP_GAP_MS = 5000;
+function groupPhotos(list) {
+  const groups = [];
+  for (const p of list) {
+    const last = groups[groups.length - 1];
+    if (!last || p.takenAt - last[last.length - 1].takenAt > PHOTO_GROUP_GAP_MS) groups.push([p]);
+    else last.push(p);
+  }
+  return groups;
+}
+// 观看端取某设备最近 N 组照片（默认每类 5 组）：每组按拍摄时间升序，封面取该组第一张。
+// deviceId 必填：未选中设备时不返回照片。该设备无照片时回退旧版全局目录（历史数据兼容）。
 app.get('/api/photos', requireUser, (req, res) => {
   const count = Math.min(20, Math.max(1, Number(req.query.count) || 5));
+  const deviceId = String(req.query.deviceId || '');
+  if (!deviceId || !db.devices.some((d) => d.id === deviceId)) return res.json({ front: [], back: [] });
   const list = (camera) => {
-    const dir = path.join(photosDir, camera);
+    const scoped = devicePhotosDir(deviceId, camera);
+    const legacy = path.join(photosDir, camera);
+    const dir = fs.existsSync(scoped) ? scoped : legacy;
+    const urlPrefix = dir === scoped ? `/photos/${deviceId}/${camera}` : `/photos/${camera}`;
     if (!fs.existsSync(dir)) return [];
     return fs.readdirSync(dir).filter((f) => f.endsWith('.jpg'))
-      .map((f) => { const st = fs.statSync(path.join(dir, f)); return { name: f, url: `/photos/${camera}/${f}`, takenAt: st.mtimeMs }; })
-      .sort((a, b) => b.takenAt - a.takenAt).slice(0, count);
+      .map((f) => { const st = fs.statSync(path.join(dir, f)); return { name: f, url: `${urlPrefix}/${f}`, takenAt: st.mtimeMs }; })
+      .sort((a, b) => a.takenAt - b.takenAt);
   };
-  res.json({ front: list('front'), back: list('back') });
+  const groupsOf = (camera) => groupPhotos(list(camera)).slice(-count).reverse()
+    .map((g) => ({ cover: g[0], photos: g, takenAt: g[0].takenAt }));
+  res.json({ front: groupsOf('front'), back: groupsOf('back') });
 });
 app.post('/api/pairing-codes', requireUser, (_req, res) => {
   db.pairingCodes = db.pairingCodes.filter((p) => p.expiresAt > Date.now());
@@ -257,7 +278,11 @@ app.post('/api/devices/pair', (req, res) => {
   if (index < 0) return res.status(400).json({ error: 'Code expired or invalid' });
   db.pairingCodes.splice(index, 1);
   const secret = crypto.randomBytes(32).toString('base64url');
-  const device = { id: id(), name: String(req.body?.name || 'Home camera').slice(0, 50), createdAt: Date.now(), secretHash: digest(secret) };
+  const clean = (v, max) => String(v ?? '').trim().slice(0, max);
+  const device = {
+    id: id(), name: String(req.body?.name || 'Home camera').slice(0, 50), createdAt: Date.now(), secretHash: digest(secret),
+    brand: clean(req.body?.brand, 40), model: clean(req.body?.model, 80), osVersion: clean(req.body?.osVersion, 40)
+  };
   db.devices.push(device); save();
   broadcastDevices();
   res.status(201).json({ device: publicDevice(device), deviceSecret: secret, iceServers });
@@ -270,17 +295,25 @@ app.patch('/api/devices/:id', requireUser, (req, res) => {
   device.name = name; save(); broadcastDevices();
   res.json({ device: publicDevice(device) });
 });
-app.delete('/api/devices/:id', requireUser, (req, res) => {
-  const index = db.devices.findIndex((d) => d.id === req.params.id);
-  if (index < 0) return res.status(404).json({ error: '设备不存在' });
-  const deviceId = req.params.id;
+// 统一的设备移除：无论观看端删除还是手机端主动解绑，都释放会话、通知两端、清凭据。
+function removeDevice(deviceId, { notifyDevice = true, reason = 'viewer' } = {}) {
+  const index = db.devices.findIndex((d) => d.id === deviceId);
+  if (index < 0) return false;
   db.devices.splice(index, 1); save();
-  // 释放观看会话，通知观看端停止；通知设备端清除本地配对
   const viewerId = activeViews.get(deviceId);
   if (viewerId) { activeViews.delete(deviceId); viewerSockets.get(viewerId)?.emit('device:removed', { deviceId }); }
+  // 仅手机端主动解绑时广播提示；观看端自己删除时它已知道，无需提示
+  if (reason === 'device') io.to('viewers').emit('device:unpaired', { deviceId });
   const deviceSocket = deviceSockets.get(deviceId);
-  if (deviceSocket) { deviceSocket.emit('device:removed'); deviceSocket.disconnect(true); deviceSockets.delete(deviceId); }
+  if (deviceSocket) {
+    if (notifyDevice) deviceSocket.emit('device:removed');
+    deviceSocket.disconnect(true); deviceSockets.delete(deviceId);
+  }
   broadcastDevices();
+  return true;
+}
+app.delete('/api/devices/:id', requireUser, (req, res) => {
+  if (!removeDevice(req.params.id)) return res.status(404).json({ error: '设备不存在' });
   res.json({ ok: true });
 });
 
@@ -350,6 +383,13 @@ io.on('connection', (socket) => {
   socket.on('device:diagnostic', ({ deviceId, message }) => {
     if (socket.data.role !== 'device') return;
     io.to('viewers').emit('device:diagnostic', { deviceId, message: String(message || '').slice(0, 300) });
+  });
+  // 手机端主动「停止配对」：服务端移除设备并通知所有观看端，避免列表残留幽灵设备
+  socket.on('device:unpair', () => {
+    if (socket.data.role !== 'device') return;
+    const deviceId = socket.data.deviceId;
+    console.log(`[device] ${deviceId} self-unpaired`);
+    removeDevice(deviceId, { notifyDevice: false, reason: 'device' });  // 设备端自己发起，无需回发 device:removed
   });
   socket.on('camera:switch', ({ deviceId }) => {
     if (socket.data.role !== 'viewer' || activeViews.get(deviceId) !== socket.id) return;

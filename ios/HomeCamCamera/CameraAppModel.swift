@@ -80,6 +80,8 @@ final class CameraAppModel: ObservableObject {
     }
 
     func disconnect() {
+        // 先通知服务端移除设备（观看端即时得到反馈），再断开本地连接清凭据
+        signaling?.sendUnpair()
         stream.stop("disconnect"); signaling?.disconnect(); signaling = nil; store.clear()
         isPaired = false; statusText = "未配对"; isStreaming = false
     }

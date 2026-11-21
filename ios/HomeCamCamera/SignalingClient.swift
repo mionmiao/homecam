@@ -91,6 +91,8 @@ final class SignalingClient {
     }
     func sendStopped() { emit("stream:state", ["state": "idle"]) }
     func sendState(_ state: String) { emit("stream:state", ["state": state]) }
+    /// 主动解除配对：通知服务端移除设备，观看端即时收到反馈
+    func sendUnpair() { emit("device:unpair", ["deviceId": credentials.deviceID]) }
     func sendDiagnostic(_ message: String) {
         emit("device:diagnostic", ["deviceId": credentials.deviceID, "message": message])
     }

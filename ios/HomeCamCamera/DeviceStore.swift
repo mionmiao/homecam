@@ -16,7 +16,11 @@ enum PairingAPI {
     static func pair(serverURL: URL, name: String, code: String) async throws -> DeviceCredentials {
         let endpoint = serverURL.appending(path: "api/devices/pair")
         var request = URLRequest(url: endpoint); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name, "code": code])
+        let device = UIDevice.current
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "name": name, "code": code,
+            "brand": "Apple", "model": DeviceInfo.modelName, "osVersion": "iOS \(device.systemVersion)"
+        ])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw PairingError.failed }
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
