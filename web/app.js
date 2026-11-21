@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 let pairingCode = ''; let pairingTimer = null;
 const roleOf = () => localStorage.getItem('homecam-role') || '';
 const applyRole = (role) => { document.body.dataset.role = role; };
-let token = null; let socket; let selected; let peer; let recorder; let chunks = []; let recTimer = null; let recStart = 0; let watching = false; let pendingCandidates = []; let resumeTimer = null;
+let token = null; let socket; let selected; let peer; let recorder; let chunks = []; let recTimer = null; let recStart = 0; let watching = false; let pendingCandidates = []; let resumeTimer = null; let editingDeviceId = null;
 const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton'), fullscreen: $('#fullscreenButton'), recBadge: $('#recBadge'), recTime: $('#recTime'), videoWrap: $('#videoWrap') };
 const view = { rotation: 0, zoom: 1, mirrored: false, exposure: 0 }; // exposure in EV (stops)
 function applyView() {
@@ -52,13 +52,24 @@ function renderDevices(devices) {
     const pairedAt = device.createdAt ? new Date(device.createdAt).toLocaleString('zh-CN', { hour12: false }) : '—';
     const statusText = device.unpairedAt ? '已失效 · 手机端已解绑' : statusLabel(device.status);
     const canNotify = !device.unpairedAt && device.status === 'idle';
-    el.innerHTML = `<div class="device-info"><div class="device-top"><strong>${escapeHtml(device.name)}</strong><span class="status">${statusText}</span></div><div class="device-meta">${deviceMeta(device)}</div><div class="device-paired">配对：${pairedAt}</div></div><div class="device-actions"><button class="icon notify" title="发送来电提醒（设备待命时）" aria-label="发送来电提醒"${canNotify ? '' : ' disabled'}>🔔</button><button class="icon rename" title="重命名" aria-label="重命名">✎</button><button class="icon danger remove" title="删除设备" aria-label="删除设备">🗑</button></div>`;
-    el.querySelector('.device-info').onclick = () => select(device);
+    const editing = editingDeviceId === device.id;
+    const nameHtml = editing
+      ? `<input class="rename-input" type="text" maxlength="50" value="${escapeHtml(device.name).replace(/"/g, '&quot;')}"><button class="icon rename-confirm" title="确定" aria-label="确定">✓</button><button class="icon rename-cancel" title="取消" aria-label="取消">✕</button>`
+      : `<strong>${escapeHtml(device.name)}</strong>`;
+    el.innerHTML = `<div class="device-info"><div class="device-top">${nameHtml}<span class="status">${statusText}</span></div><div class="device-meta">${deviceMeta(device)}</div><div class="device-paired">配对：${pairedAt}</div></div><div class="device-actions"><button class="icon notify" title="发送来电提醒（设备待命时）" aria-label="发送来电提醒"${canNotify ? '' : ' disabled'}>🔔</button><button class="icon rename" title="重命名" aria-label="重命名"${editing ? ' hidden' : ''}>✎</button><button class="icon danger remove" title="删除设备" aria-label="删除设备"${editing ? ' hidden' : ''}>🗑</button></div>`;
+    el.querySelector('.device-info').onclick = () => { if (!editing) select(device); };
     el.querySelector('.notify').onclick = () => sendNotice(device);
-    el.querySelector('.rename').onclick = () => renameDevice(device);
+    el.querySelector('.rename').onclick = () => { editingDeviceId = device.id; renderDevices(devices); };
+    el.querySelector('.rename-confirm')?.addEventListener('click', (e) => { e.stopPropagation(); commitRename(device, el.querySelector('.rename-input').value); });
+    el.querySelector('.rename-cancel')?.addEventListener('click', (e) => { e.stopPropagation(); editingDeviceId = null; renderDevices(devices); });
+    el.querySelector('.rename-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitRename(device, e.target.value); }
+      if (e.key === 'Escape') { e.preventDefault(); editingDeviceId = null; renderDevices(devices); }
+    });
     el.querySelector('.remove').onclick = () => removeDevice(device);
     ui.devices.append(el);
   });
+  if (editingDeviceId) ui.devices.querySelector('.rename-input')?.focus();
   if (selected) {
     selected = devices.find((d) => d.id === selected.id) || selected;  // 同步最新状态（含解绑标记）
     document.querySelectorAll('.device').forEach((e) => e.classList.toggle('selected', e.dataset.id === selected.id));
@@ -66,7 +77,15 @@ function renderDevices(devices) {
 }
 function escapeHtml(value) { const div = document.createElement('div'); div.textContent = value; return div.innerHTML; }
 async function loadDevices() { renderDevices(await api('/api/devices')); }
-async function renameDevice(device) { const name = prompt('设备新名称（最多 50 字）', device.name); if (name === null) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'PATCH', body: JSON.stringify({ name }) }); await loadDevices(); } catch (e) { alert(e.message); } }
+async function commitRename(device, name) {
+  name = String(name || '').trim();
+  if (!name) { alert('设备名不能为空'); return; }
+  editingDeviceId = null;
+  if (name === device.name) return void loadDevices();
+  try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'PATCH', body: JSON.stringify({ name }) }); }
+  catch (e) { alert(e.message); }
+  await loadDevices();
+}
 async function removeDevice(device) { const stale = !!device.unpairedAt; if (!confirm(stale ? `移除已失效设备「${device.name}」？\n仅从列表删除记录，手机端无需操作。` : `删除设备「${device.name}」？\n手机端会收到通知并解除配对，需要重新配对才能使用。`)) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' }); if (selected?.id === device.id) { selected = null; cleanup(); clearPhotos(); } await loadDevices(); } catch (e) { alert(e.message); } }
 function connect() { socket = io({ withCredentials: true }); socket.on('connect', () => { ui.connection.textContent = '已连接'; loadDevices(); }); socket.on('connect_error', (err) => { if (err?.message === 'Unauthorized') return expire(); ui.connection.textContent = '连接失败'; }); socket.on('devices', renderDevices); socket.on('device:status', ({ deviceId, status }) => { if (selected?.id === deviceId) { selected.status = status; ui.status.textContent = `${selected.name}：${statusLabel(status)}`; } loadDevices(); }); socket.on('watch:accepted', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机已接受，等待其 offer'); }); socket.on('signal', async ({ fromId, data }) => receiveSignal(fromId, data)); socket.on('watch:stopped', () => cleanup()); socket.on('watch:resume', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机网络切换，准备重新协商'); setWatchUi(true); ui.status.textContent = '手机网络切换中，正在重连…'; clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { if (peer && peer.connectionState !== 'connected') { appendDiag('重建前清理旧连接'); cleanup(); setWatchUi(true); } }, 3000); }); socket.on('device:removed', ({ deviceId }) => { if (selected?.id === deviceId) { selected = null; cleanup(); clearPhotos(); } loadDevices(); }); socket.on('device:unpaired', ({ deviceId, name }) => { const wasSelected = selected?.id === deviceId; if (wasSelected) { cleanup(); selected.unpairedAt = Date.now(); selected.status = 'unpaired'; ui.status.textContent = `${selected.name}：已失效（手机端已解绑）`; } appendDiag(`设备 ${name || deviceId.slice(0, 8)} 已在手机端解除配对${wasSelected ? '，已停止观看（设备保留为失效）' : ''}`); loadDevices(); }); socket.on('pairing:result', ({ status, code, name }) => { if (!pairingCode || (code && code !== pairingCode)) return; clearInterval(pairingTimer); pairingTimer = null; pairingCode = ''; if (status === 'paired') { setPairNotice(`配对成功${name ? '：' + name : ''}`, 'success'); loadDevices(); } }); socket.on('device:diagnostic', ({ deviceId, message }) => { if (deviceId === selected?.id) appendDiag('手机端: ' + message); }); }
 function initPeer(iceServers) { peer = new RTCPeerConnection({ iceServers }); pendingCandidates = []; appendDiag(`ICE servers: ${iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(',')).join(' | ')}`); peer.onicecandidate = ({ candidate }) => { if (candidate) { const t = (candidate.type || '').toLowerCase(); appendDiag(`my candidate: ${t || '?'} ${String(candidate.candidate).slice(0, 40)}`); socket.emit('signal', { targetId: selected.id, data: { type: 'candidate', candidate } }); } }; peer.ontrack = ({ streams }) => { ui.video.srcObject = streams[0]; ui.status.textContent = '正在观看'; appendDiag('ontrack: 收到媒体流'); }; peer.onconnectionstatechange = () => { const s = peer?.connectionState; appendDiag(`peer: ${s}`); if (s === 'closed') cleanup(); else if (s === 'failed' || s === 'disconnected') setTimeout(() => { if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) { appendDiag('ICE 断开超时，清理'); cleanup(); } }, 25000); }; peer.oniceconnectionstatechange = () => appendDiag(`ice: ${peer.iceConnectionState}`); }
@@ -187,6 +206,11 @@ $('#revokeAllButton').onclick = async () => {
   try { await api('/api/auth/revoke-all', { method: 'POST' }); expire(); } catch (e) { alert(e.message); }
 };
 $('#copyDiagButton').onclick = copyDiag;
+const closePwModal = () => { $('#passwordModal').hidden = true; $('#pwResult').hidden = true; $('#pwCurrent').value = ''; $('#pwNext').value = ''; };
+$('#passwordButton').onclick = () => { $('#passwordModal').hidden = false; $('#pwRole').focus(); };
+$('#pwClose').onclick = closePwModal;
+$('#passwordModal').onclick = (e) => { if (e.target.id === 'passwordModal') closePwModal(); };
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#passwordModal').hidden) closePwModal(); });
 $('#pwSubmit').onclick = async () => {
   const result = $('#pwResult');
   const role = $('#pwRole').value, current = $('#pwCurrent').value, next = $('#pwNext').value;
