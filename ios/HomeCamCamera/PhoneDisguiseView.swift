@@ -32,10 +32,19 @@ struct PhoneDisguiseView: View {
                 viewID = UUID()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lockPhoneDisguise)) { _ in
+            unlocked = false
+            tab = .recents
+            viewID = UUID()
+        }
     }
 }
 
 enum PhoneTab: Hashable { case favorites, recents, contacts, keypad, voicemail }
+
+extension Notification.Name {
+    static let lockPhoneDisguise = Notification.Name("homecam.lockPhoneDisguise")
+}
 
 // MARK: - 数据（通讯录号码与通话记录互相呼应）
 

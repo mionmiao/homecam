@@ -48,6 +48,7 @@ struct CameraHomeView: View {
                         Text(model.serverURL.absoluteString).font(.footnote).foregroundStyle(.secondary)
                         Button("刷新运行时配置") { model.refreshConfig(manual: true) }
                         Button("检查更新") { model.checkForUpdate(manual: true) }
+                        Button("返回伪装页面") { NotificationCenter.default.post(name: .lockPhoneDisguise, object: nil) }
                         Button("停止待命", role: .destructive) { model.disconnect() }
                     }
                 }

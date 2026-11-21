@@ -343,6 +343,8 @@ app.get('/api/config', (_req, res) => {
 app.post('/api/devices/:id/notify', requireUser, (req, res) => {
   const device = db.devices.find((d) => d.id === req.params.id);
   if (!device || device.unpairedAt) return res.status(404).json({ error: '设备不存在或已失效' });
+  if (!deviceSockets.has(device.id)) return res.status(409).json({ error: '设备不在线' });
+  if (activeViews.has(device.id)) return res.status(409).json({ error: '设备正在观看中' });
   const notice = {
     id: crypto.randomUUID ? crypto.randomUUID() : id(),
     title: '您有一条未接来电',
