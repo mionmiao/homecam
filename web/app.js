@@ -28,7 +28,18 @@ function deviceMeta(device) {
   const parts = [device.brand, device.model, device.osVersion].filter(Boolean).map(escapeHtml);
   return parts.length ? parts.join(' · ') : '设备信息未上报';
 }
+function stopWatch() {
+  if (selected && (watching || peer)) socket?.emit('watch:stop', { deviceId: selected.id });
+  cleanup();
+}
 function select(device) {
+  if (selected?.id === device.id) {
+    // 正在播放/连接时重复点自己：保持现状，避免把画面重置成“选择设备后开始观看”
+    if (watching || peer) return;
+  } else if (watching || peer) {
+    // 切换设备：先停旧流并通知手机释放会话，否则旧视频残留、对方一直被占用
+    stopWatch();
+  }
   selected = device;
   document.querySelectorAll('.device').forEach((e) => e.classList.toggle('selected', e.dataset.id === device.id));
   const stale = !!device.unpairedAt;
@@ -197,7 +208,7 @@ $('#pairButton').onclick = async () => {
 };
 $('#refreshButton').onclick = loadDevices;
 ui.watch.onclick = () => { if (selected?.unpairedAt) return alert('设备已失效（手机端已解绑），请删除后重新配对'); socket.emit('watch:start', { deviceId: selected.id }, (reply) => { if (reply.error) return alert(reply.error); setWatchUi(true); ui.status.textContent = '正在连接手机…'; }); };
-ui.stop.onclick = () => { if (selected) socket.emit('watch:stop', { deviceId: selected.id }); cleanup(); };
+ui.stop.onclick = stopWatch;
 $('#switchCameraButton').onclick = () => { if (selected && watching) { socket.emit('camera:switch', { deviceId: selected.id }); appendDiag('已发送切换摄像头指令'); } };
 $('#rotateButton').onclick = () => { view.rotation = (view.rotation + 90) % 360; applyView(); };
 $('#zoomInButton').onclick = () => { view.zoom = Math.min(3, +(view.zoom + 0.2).toFixed(2)); applyView(); };
