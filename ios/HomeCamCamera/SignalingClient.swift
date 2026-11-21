@@ -17,6 +17,7 @@ final class SignalingClient {
     var onRemoved: (() -> Void)?
     var onSwitchCamera: (() -> Void)?
     var onDiagnostic: ((String) -> Void)?
+    var onNotice: ((String, String) -> Void)?   // 观看端发来的未接来电提醒（title, body）
     private let credentials: DeviceCredentials; private let manager: SocketManager; private let socket: SocketIOClient
     private var viewerID: String?
     private var pendingCandidates: [CandidateMessage] = []
@@ -60,6 +61,11 @@ final class SignalingClient {
         socket.on("signal") { [weak self] data, _ in self?.handleSignal(data) }
         socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
         socket.on("camera:switch") { [weak self] _, _ in self?.onSwitchCamera?() }
+        socket.on("device:notice") { [weak self] data, _ in
+            let title = data.first?["title"] as? String ?? "您有一条未接来电"
+            let body = data.first?["body"] as? String ?? "点击查看"
+            self?.onNotice?(title, body)
+        }
         // 网络接口变化（WiFi↔蜂窝）时立即重连信令，不等 Socket.IO 心跳超时（约 45 秒）
         pathMonitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }

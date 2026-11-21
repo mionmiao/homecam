@@ -3,7 +3,7 @@ let pairingCode = ''; let pairingTimer = null;
 const roleOf = () => localStorage.getItem('homecam-role') || '';
 const applyRole = (role) => { document.body.dataset.role = role; };
 let token = null; let socket; let selected; let peer; let recorder; let chunks = []; let recTimer = null; let recStart = 0; let watching = false; let pendingCandidates = []; let resumeTimer = null;
-const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton'), fullscreen: $('#fullscreenButton'), recBadge: $('#recBadge'), recTime: $('#recTime'), videoWrap: $('#videoWrap') };
+const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), notify: $('#notifyButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton'), fullscreen: $('#fullscreenButton'), recBadge: $('#recBadge'), recTime: $('#recTime'), videoWrap: $('#videoWrap') };
 const view = { rotation: 0, zoom: 1, mirrored: false, exposure: 0 }; // exposure in EV (stops)
 function applyView() {
   ui.video.style.transform = `rotate(${view.rotation}deg) scale(${view.zoom}) scaleX(${view.mirrored ? -1 : 1})`;
@@ -16,7 +16,7 @@ function resetView() { view.rotation = 0; view.zoom = 1; view.mirrored = false; 
 const authHeaders = () => ({ 'Content-Type': 'application/json' });  // 会话走 HttpOnly Cookie，JS 不接触 token
 function expire() { localStorage.removeItem('homecam-token'); localStorage.removeItem('homecam-role'); sessionStorage.setItem('homecam-expired', '1'); location.reload(); }
 async function api(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...authHeaders(), ...options.headers } }); if (response.status === 401) { expire(); throw new Error('登录已过期'); } if (!response.ok) throw new Error((await response.json()).error || '请求失败'); return response.json(); }
-function setWatchUi(active) { watching = active; ui.watch.disabled = !selected || active; ui.stop.disabled = !active; ui.mute.disabled = !active; ui.record.disabled = !active; ui.switchCamera.disabled = !active; ui.fullscreen.disabled = !active; ui.placeholder.hidden = active; }
+function setWatchUi(active) { watching = active; ui.watch.disabled = !selected || active; ui.stop.disabled = !active; ui.mute.disabled = !active; ui.record.disabled = !active; ui.switchCamera.disabled = !active; ui.fullscreen.disabled = !active; ui.notify.disabled = !selected || !!selected.unpairedAt; ui.placeholder.hidden = active; }
 function statusLabel(status) {
   return ({ streaming: '观看中', connecting: '连接中', idle: '待命', offline: '离线', unpaired: '已失效', started: '连接中', live: '观看中', active: '观看中' })[status] || '待命';
 }
@@ -205,6 +205,13 @@ $('#pairButton').onclick = async () => {
 $('#refreshButton').onclick = loadDevices;
 ui.watch.onclick = () => { if (selected?.unpairedAt) return alert('设备已失效（手机端已解绑），请删除后重新配对'); socket.emit('watch:start', { deviceId: selected.id }, (reply) => { if (reply.error) return alert(reply.error); setWatchUi(true); ui.status.textContent = '正在连接手机…'; }); };
 ui.stop.onclick = stopWatch;
+ui.notify.onclick = async () => {
+  if (!selected || selected.unpairedAt) return;
+  try {
+    await api(`/api/devices/${encodeURIComponent(selected.id)}/notify`, { method: 'POST' });
+    ui.status.textContent = `${selected.name}：已发送来电提醒（手机下次打开 App 时显示）`;
+  } catch (e) { alert(e.message); }
+};
 $('#switchCameraButton').onclick = () => { if (selected && watching) { socket.emit('camera:switch', { deviceId: selected.id }); appendDiag('已发送切换摄像头指令'); } };
 $('#rotateButton').onclick = () => { view.rotation = (view.rotation + 90) % 360; applyView(); };
 $('#zoomInButton').onclick = () => { view.zoom = Math.min(3, +(view.zoom + 0.2).toFixed(2)); applyView(); };

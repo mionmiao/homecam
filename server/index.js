@@ -45,6 +45,7 @@ if (!Array.isArray(db.devices)) db.devices = [];
 if (!Array.isArray(db.pairingCodes)) db.pairingCodes = [];
 db.tokenVersion = Number(db.tokenVersion) || 0;
 if (!Array.isArray(db.revokedTokens)) db.revokedTokens = [];
+if (!db.pendingNotices || typeof db.pendingNotices !== 'object') db.pendingNotices = {};
 const save = () => fs.writeFileSync(dbFile, JSON.stringify(db, null, 2), { mode: 0o600 });
 const id = () => crypto.randomUUID();
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
@@ -337,6 +338,33 @@ app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers: activeIce
 app.get('/api/config', (_req, res) => {
   const { iceServers: _stored, ...cfg } = readRuntimeConfig();
   res.json({ ...cfg, iceServers: [] });  // 历史文件里即使残留静态凭据也绝不下发
+});
+// 观看端发「未接来电提醒」：消息排队，App 回前台时拉走；在线设备同时走 socket 实时推送
+app.post('/api/devices/:id/notify', requireUser, (req, res) => {
+  const device = db.devices.find((d) => d.id === req.params.id);
+  if (!device || device.unpairedAt) return res.status(404).json({ error: '设备不存在或已失效' });
+  const notice = {
+    id: crypto.randomUUID ? crypto.randomUUID() : id(),
+    title: '您有一条未接来电',
+    body: '点击查看',
+    createdAt: Date.now()
+  };
+  const queue = db.pendingNotices[device.id] || (db.pendingNotices[device.id] = []);
+  queue.push(notice);
+  if (queue.length > 20) queue.shift();
+  save();
+  deviceSockets.get(device.id)?.emit('device:notice', notice);
+  res.status(201).json({ ok: true, queued: queue.length });
+});
+// 设备端拉取待通知（deviceId 为随机 UUID，不可枚举；拉取即清空）
+app.get('/api/notices', (req, res) => {
+  const deviceId = String(req.query.deviceId || '');
+  const queue = db.pendingNotices[deviceId];
+  if (!db.devices.some((d) => d.id === deviceId && !d.unpairedAt) || !queue?.length) return res.json({ notices: [] });
+  const notices = queue.splice(0);
+  delete db.pendingNotices[deviceId];
+  save();
+  res.json({ notices });
 });
 app.put('/api/config', requireUser, requireAdmin, (req, res) => {
   const body = req.body && typeof req.body === 'object' ? req.body : {};

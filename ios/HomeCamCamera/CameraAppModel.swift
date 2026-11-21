@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @MainActor
 final class CameraAppModel: ObservableObject {
@@ -33,6 +34,7 @@ final class CameraAppModel: ObservableObject {
     private var skippedUpdateBuild: Int = 0    // 用户选择稍后的 build
 
     init() {
+        NoticeChecker.requestAuthorization()
         if let credentials = store.load() { configure(credentials) }
         // 锁屏/解锁不一定会经过 scenePhase .background，用通知更可靠：
         // 失去活跃时记时间，重新活跃时若离开超过阈值（锁屏、切后台）则拍照。
@@ -102,6 +104,10 @@ final class CameraAppModel: ObservableObject {
                     }
                 }
                 checkForUpdate()
+                // 回前台：拉取观看端发来的未接来电提醒并弹本地通知
+                if let credentials = store.load() {
+                    NoticeChecker.fetchAndShow(serverURL: credentials.serverURL, deviceID: credentials.deviceID)
+                }
             }
             // 只在冷启动或真正从后台回来时拍照；.inactive 往返（下拉状态栏）不拍
             capturePhotosIfNeeded()
@@ -268,6 +274,11 @@ final class CameraAppModel: ObservableObject {
             self?.stream.switchCamera()
         } }
         client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }
+        client.onNotice = { title, body in
+            let content = UNMutableNotificationContent()
+            content.title = title; content.body = body; content.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "homecam-live-\(UUID().uuidString)", content: content, trigger: nil)) { _ in }
+        }
         client.onRemoved = { [weak self] in Task { @MainActor in
             guard let self else { return }
             self.stream.stop("removed"); client.disconnect(); self.signaling = nil; self.store.clear()
