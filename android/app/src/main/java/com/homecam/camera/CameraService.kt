@@ -232,7 +232,7 @@ class CameraService : Service() {
         streamer.stop("unpair", notifyState = false)
         viewerId = null
         val payload = JSONObject().put("deviceId", prefs.getString("deviceId", ""))
-        val finish = {
+        val finish = Runnable {
             emit("device:unpair", payload)   // 服务端从 socket 身份取设备，无需等待回执
             prefs.edit().remove("deviceId").remove("deviceSecret").apply()
             handler.postDelayed({ stopSelf() }, 300)  // 留时间给 emit 发出
@@ -297,7 +297,8 @@ class CameraService : Service() {
                 if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) forceReconnect("changed")
             }
         }
-        try { manager.registerNetworkCallback(request, networkCallback) } catch (_: Exception) {}
+        val callback = networkCallback ?: return
+        try { manager.registerNetworkCallback(request, callback) } catch (_: Exception) {}
     }
 
     private fun forceReconnect(reason: String) {
