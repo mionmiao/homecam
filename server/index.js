@@ -34,6 +34,46 @@ const matchPassword = (attempt, expected) => {
   const a = String(attempt || ''), b = String(expected || '');
   return a.length === b.length && safeEqual(a, b);
 };
+// Cloudflare Tunnel 下 Node 看到的 remoteAddress 是隧道本机；只有来自可信代理时才采信转发头。
+// 隧道跑在别的网段时，用 TRUST_PROXY_IPS 把该地址加进来（逗号分隔）。
+const trustedProxies = new Set(
+  (process.env.TRUST_PROXY_IPS || '127.0.0.1,::1,::ffff:127.0.0.1').split(',').map((s) => s.trim()).filter(Boolean)
+);
+const clientIp = (req) => {
+  const remote = req.socket.remoteAddress || '';
+  if (trustedProxies.has(remote)) {
+    const cf = String(req.headers['cf-connecting-ip'] || '').trim();
+    if (cf) return cf.split(',')[0].trim();
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (xff) return xff;
+  }
+  return remote;
+};
+// 轻量滑动窗口限流：只按 IP + 场景计数，无需新增依赖。
+const rateHits = new Map();
+const rateLimit = (key, limit, windowMs) => {
+  const now = Date.now();
+  const hits = rateHits.get(key) || [];
+  while (hits.length && now - hits[0] >= windowMs) hits.shift();
+  hits.push(now);
+  rateHits.set(key, hits);
+  if (rateHits.size > 20000) { const oldest = rateHits.keys().next().value; rateHits.delete(oldest); }
+  return { ok: hits.length <= limit, retryAfter: Math.max(1, Math.ceil((hits[0] + windowMs - now) / 1000)) };
+};
+const resetRateLimit = (key) => rateHits.delete(key);
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, hits] of rateHits) if (!hits.length || now - hits[hits.length - 1] >= 900000) rateHits.delete(key);
+}, 300000).unref();
+const LOGIN_LIMIT = Number(process.env.LOGIN_LIMIT || 8);
+const PAIR_LIMIT = Number(process.env.PAIR_LIMIT || 10);
+const PAIR_WINDOW_MS = 10 * 60 * 1000;
+const guard = (name, limit, windowMs, keyOf = clientIp) => (req, res, next) => {
+  const result = rateLimit(`${name}:${keyOf(req)}`, limit, windowMs);
+  if (result.ok) return next();
+  res.set('Retry-After', String(result.retryAfter));
+  res.status(429).json({ error: `尝试次数过多，请 ${Math.ceil(result.retryAfter / 60)} 分钟后再试` });
+};
 const sign = (payload) => {
   const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 })).toString('base64url');
   return `${body}.${crypto.createHmac('sha256', tokenSecret).update(body).digest('base64url')}`;
@@ -181,13 +221,15 @@ app.get(['/', '/index.html'], (_req, res) => {
 app.get('/api/web-version', (_req, res) => res.json({ version: webVersion() }));
 app.use('/releases', express.static(releasesDir, { maxAge: 0, index: false }));
 // App 检查更新：返回最新可用构建与直链下载地址
-app.get('/api/version', (req, res) => {
-  const base = `https://${req.headers.host}`;
-  if (!latestRelease) return res.json({ build: 0, version: '', notes: '', ipaUrl: '', ready: false });
-  console.log(`[version] checked by ${req.socket.remoteAddress} build=${latestRelease.build}`);
+app.get('/api/version', (_req, res) => {
+  // 只返回相对路径：客户端用自己保存的 serverURL 拼绝对路径。
+  // 这样 Cloudflare 临时域名每次变化都无需改配置，也彻底避开 Host 头注入。
+  const ipaPath = '/releases/HomeCamCamera.ipa';
+  if (!latestRelease) return res.json({ build: 0, version: '', notes: '', ipaPath, ipaUrl: '', ready: false });
+  console.log(`[version] checked by ${clientIp(_req)} build=${latestRelease.build}`);
   res.json({
     build: latestRelease.build, version: latestRelease.version, notes: latestRelease.notes,
-    ipaUrl: `${base}/releases/HomeCamCamera.ipa`, sha256: latestRelease.sha256,
+    ipaPath, ipaUrl: ipaPath, sha256: latestRelease.sha256,
     size: latestRelease.size, publishedAt: latestRelease.publishedAt, ready: true
   });
 });
@@ -199,10 +241,11 @@ const requireUser = (req, res, next) => {
   req.user = auth; next();
 };
 const requireAdmin = (req, res, next) => req.user?.role === 'admin' ? next() : res.status(403).json({ error: '仅开发者可用' });
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', guard('login', LOGIN_LIMIT, 15 * 60 * 1000), (req, res) => {
   const attempt = String(req.body?.password || '');
   const role = matchPassword(attempt, adminPassword) ? 'admin' : matchPassword(attempt, memberPassword) ? 'member' : null;
   if (!role) return res.status(401).json({ error: '密码错误' });
+  resetRateLimit(`login:${clientIp(req)}`);
   res.json({ token: sign({ role }), role });
 });
 app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(deviceView)));
@@ -284,7 +327,7 @@ app.post('/api/pairing-codes', requireUser, (_req, res) => {
   db.pairingCodes.push({ codeHash: digest(code), expiresAt }); save();
   res.status(201).json({ code, expiresAt, ttlMs });
 });
-app.post('/api/devices/pair', (req, res) => {
+app.post('/api/devices/pair', guard('pair', PAIR_LIMIT, PAIR_WINDOW_MS), guard('pair-global', 1000, PAIR_WINDOW_MS, () => '*'), (req, res) => {
   const index = db.pairingCodes.findIndex((p) => p.expiresAt > Date.now() && p.codeHash === digest(String(req.body?.code || '')));
   if (index < 0) return res.status(400).json({ error: 'Code expired or invalid' });
   db.pairingCodes.splice(index, 1);
@@ -298,6 +341,7 @@ app.post('/api/devices/pair', (req, res) => {
   broadcastDevices();
   // 配对码一次性：通知所有观看端该码已消费，隐藏配对提示并显示配对成功
   io.to('viewers').emit('pairing:result', { status: 'paired', code: String(req.body?.code || ''), deviceId: device.id, name: device.name });
+  resetRateLimit(`pair:${clientIp(req)}`);
   res.status(201).json({ device: publicDevice(device), deviceSecret: secret, iceServers });
 });
 app.patch('/api/devices/:id', requireUser, (req, res) => {
