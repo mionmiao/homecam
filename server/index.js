@@ -236,6 +236,18 @@ app.use((_req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
   res.set('Referrer-Policy', 'no-referrer');
+  res.set('Content-Security-Policy', [
+    "default-src 'self' blob: data:",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' blob: data:",
+    "media-src 'self' blob: mediastream:",
+    "connect-src 'self' ws: wss:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'"
+  ].join('; '));
   next();
 });
 app.use(express.json({ limit: '12mb' }));
@@ -281,8 +293,19 @@ app.use('/photos', (req, res, next) => {
   if (!exp || exp < Date.now() || sig.length !== expected.length || !safeEqual(sig, expected)) return res.status(403).send('Forbidden');
   next();
 }, express.static(photosDir, { maxAge: 0, index: false }));
+// 观看端 token 走 HttpOnly Cookie，避免 localStorage 被 XSS 窃取；
+// 同时保留 Authorization: Bearer 作为兼容（旧客户端/脚本）。
+const parseCookies = (header) => Object.fromEntries(
+  String(header || '').split(';').map((p) => p.trim().split('=')).filter(([k, v]) => k && v !== undefined)
+    .map(([k, v]) => [k, decodeURIComponent(v)])
+);
+const tokenFrom = (headers) => parseCookies(headers?.cookie).homecam_token || String(headers?.authorization || '').replace(/^Bearer /, '');
+const cookieOptions = (req) => ({
+  httpOnly: true, sameSite: 'strict', path: '/', maxAge: TOKEN_TTL_MS,
+  secure: !!req.secure || String(req.headers?.['x-forwarded-proto'] || '').toLowerCase() === 'https'
+});
 const requireUser = (req, res, next) => {
-  const auth = verify(req.headers.authorization?.replace(/^Bearer /, ''));
+  const auth = verify(tokenFrom(req.headers));
   if (!auth?.role || !['admin', 'member'].includes(auth.role)) return res.status(401).json({ error: 'Unauthorized' });
   req.user = auth; next();
 };
@@ -292,10 +315,13 @@ app.post('/api/auth/login', guard('login', LOGIN_LIMIT, 15 * 60 * 1000), (req, r
   const role = matchPassword(attempt, adminPassword) ? 'admin' : matchPassword(attempt, memberPassword) ? 'member' : null;
   if (!role) return res.status(401).json({ error: '密码错误' });
   resetRateLimit(`login:${clientIp(req)}`);
-  res.json({ token: sign({ role }), role });
+  const token = sign({ role });
+  res.cookie('homecam_token', token, cookieOptions(req));
+  res.json({ token, role });  // token 字段仅为兼容旧脚本；浏览器不再落地存储
 });
 app.post('/api/auth/logout', requireUser, (req, res) => {
   if (req.user.jti) { db.revokedTokens.push({ jti: req.user.jti, exp: req.user.exp }); save(); }
+  res.clearCookie('homecam_token', { httpOnly: true, sameSite: 'strict', path: '/', secure: cookieOptions(req).secure });
   res.json({ ok: true });
 });
 app.post('/api/auth/revoke-all', requireUser, requireAdmin, (req, res) => {
@@ -458,7 +484,7 @@ const deviceStatus = (deviceId, status) => io.to('viewers').emit('device:status'
 const notify = (deviceId, status) => { deviceStatus(deviceId, status); broadcastDevices(); };
 
 io.use((socket, next) => {
-  const auth = verify(socket.handshake.auth?.token);
+  const auth = verify(tokenFrom(socket.handshake.headers) || socket.handshake.auth?.token);
   if (auth?.role === 'admin' || auth?.role === 'member') { socket.data.role = 'viewer'; socket.data.viewerRole = auth.role; socket.data.tokenVer = auth.ver || 0; return next(); }
   // The Swift Socket.IO client supplies credentials as connection parameters;
   // browser and Android clients use the Socket.IO auth object.
