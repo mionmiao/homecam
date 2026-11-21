@@ -106,6 +106,7 @@ class CameraService : Service() {
         val deviceId = prefs.getString("deviceId", null)
         val deviceSecret = prefs.getString("deviceSecret", null)
         if (serverUrl.isNullOrBlank() || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) return
+        if (!serverUrl.startsWith("https://")) { updateNotification("服务器地址必须使用 HTTPS，请重新配对"); return }
         try {
             socket = IO.socket(URI(serverUrl), IO.Options().apply {
                 auth = mapOf("deviceId" to deviceId, "deviceSecret" to deviceSecret)

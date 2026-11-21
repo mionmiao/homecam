@@ -165,11 +165,18 @@ document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
 function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; setTimeout(checkWebVersion, 500); }
 async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); token = data.token; localStorage.setItem('homecam-token', token); localStorage.setItem('homecam-role', data.role || 'admin'); applyRole(data.role || 'admin'); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; connect(); loadPhotos(); } catch (e) { ui.error.textContent = e.message; } }
-function logout() { cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; clearInterval(pairingTimer); pairingTimer = null; pairingCode = ''; $('#pairing').hidden = true; localStorage.removeItem('homecam-token'); localStorage.removeItem('homecam-role'); document.body.dataset.role = ''; ui.devices.innerHTML = ''; clearPhotos(); ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false; }
+async function logout() {
+  try { await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }); } catch { /* 服务端不可达也要清本地 */ }
+  cleanup(); socket?.disconnect(); socket = null; selected = null; token = null; clearInterval(pairingTimer); pairingTimer = null; pairingCode = ''; $('#pairing').hidden = true; localStorage.removeItem('homecam-token'); localStorage.removeItem('homecam-role'); document.body.dataset.role = ''; ui.devices.innerHTML = ''; clearPhotos(); ui.connection.textContent = '未登录'; ui.password.value = ''; ui.error.textContent = ''; ui.dashboard.hidden = true; ui.login.hidden = false;
+}
 $('#loginButton').onclick = login;
 $('#password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('#togglePassword').onclick = () => { const input = $('#password'); const show = input.type === 'password'; input.type = show ? 'text' : 'password'; $('#togglePassword').textContent = show ? '隐藏' : '显示'; };
 $('#logoutButton').onclick = logout;
+$('#revokeAllButton').onclick = async () => {
+  if (!confirm('撤销所有已登录会话？所有人需重新输入密码。')) return;
+  try { await api('/api/auth/revoke-all', { method: 'POST' }); expire(); } catch (e) { alert(e.message); }
+};
 $('#copyDiagButton').onclick = copyDiag;
 function setPairNotice(text, kind = '') { const n = $('#pairing'); if (!n) return; n.hidden = false; n.textContent = text; n.className = 'notice' + (kind ? ' ' + kind : ''); }
 $('#pairButton').onclick = async () => {

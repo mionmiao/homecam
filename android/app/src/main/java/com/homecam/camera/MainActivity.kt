@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.pairButton).setOnClickListener {
             val server = url.text.toString().trim().removeSuffix("/")
-            if (!server.startsWith("https://") && !server.startsWith("http://")) {
+            if (!server.startsWith("https://")) {
                 status.text = "服务器地址必须以 https:// 开头"
                 return@setOnClickListener
             }

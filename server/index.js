@@ -21,11 +21,30 @@ const tokenSecret = process.env.TOKEN_SECRET;
 if (!adminPassword || !memberPassword || !tokenSecret) throw new Error('ADMIN_PASSWORD, MEMBER_PASSWORD and TOKEN_SECRET must be set in .env');
 let iceServers;
 try { iceServers = JSON.parse(process.env.ICE_SERVERS || '[{"urls":["stun:stun.l.google.com:19302"]}]'); } catch { throw new Error('ICE_SERVERS must be valid JSON'); }
+// coturn REST API 临时凭据：TURN_SECRET 与 coturn 的 static-auth-secret 一致。
+// 未配置时退回 ICE_SERVERS 里的静态凭据，兼容旧部署。
+const turnSecret = process.env.TURN_SECRET || '';
+const turnTtlSeconds = Number(process.env.TURN_TTL_SECONDS || 3600);
+const activeIceServers = () => {
+  if (!turnSecret) return iceServers;
+  const exp = Math.floor(Date.now() / 1000) + turnTtlSeconds;
+  const username = `${exp}:homecam`;
+  const credential = crypto.createHmac('sha1', turnSecret).update(username).digest('base64');
+  return iceServers.map((s) => {
+    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+    const isTurn = urls.some((u) => /^turns?:/i.test(String(u)));
+    return isTurn ? { ...s, username, credential } : { ...s };
+  });
+};
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(releasesDir, { recursive: true });
 fs.mkdirSync(path.join(photosDir, 'front'), { recursive: true });
 fs.mkdirSync(path.join(photosDir, 'back'), { recursive: true });
 let db = fs.existsSync(dbFile) ? JSON.parse(fs.readFileSync(dbFile, 'utf8')) : { devices: [], pairingCodes: [] };
+if (!Array.isArray(db.devices)) db.devices = [];
+if (!Array.isArray(db.pairingCodes)) db.pairingCodes = [];
+db.tokenVersion = Number(db.tokenVersion) || 0;
+if (!Array.isArray(db.revokedTokens)) db.revokedTokens = [];
 const save = () => fs.writeFileSync(dbFile, JSON.stringify(db, null, 2), { mode: 0o600 });
 const id = () => crypto.randomUUID();
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
@@ -74,8 +93,9 @@ const guard = (name, limit, windowMs, keyOf = clientIp) => (req, res, next) => {
   res.set('Retry-After', String(result.retryAfter));
   res.status(429).json({ error: `尝试次数过多，请 ${Math.ceil(result.retryAfter / 60)} 分钟后再试` });
 };
+const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const sign = (payload) => {
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, jti: id(), ver: db.tokenVersion || 0, exp: Date.now() + TOKEN_TTL_MS })).toString('base64url');
   return `${body}.${crypto.createHmac('sha256', tokenSecret).update(body).digest('base64url')}`;
 };
 const verify = (token) => {
@@ -83,13 +103,26 @@ const verify = (token) => {
   if (!body || !signature) return null;
   const expected = crypto.createHmac('sha256', tokenSecret).update(body).digest('base64url');
   if (expected.length !== signature.length || !safeEqual(expected, signature)) return null;
-  try { const value = JSON.parse(Buffer.from(body, 'base64url')); return value.exp > Date.now() ? value : null; } catch { return null; }
+  try {
+    const value = JSON.parse(Buffer.from(body, 'base64url'));
+    if (!(value.exp > Date.now())) return null;
+    if ((value.ver || 0) !== (db.tokenVersion || 0)) return null;
+    if (value.jti && db.revokedTokens.some((r) => r.jti === value.jti && r.exp > Date.now())) return null;
+    return value;
+  } catch { return null; }
+};
+// 照片 URL 短期签名：只有登录用户拿到的 /api/photos 列表才给有效签名，破解文件名也无法直接访问。
+const PHOTO_TTL_MS = 60 * 60 * 1000;
+const photoSig = (urlPath, exp) => crypto.createHmac('sha256', tokenSecret).update(`${urlPath}|${exp}`).digest('base64url');
+const signedPhotoUrl = (urlPath) => {
+  const exp = Date.now() + PHOTO_TTL_MS;
+  return `${urlPath}?exp=${exp}&sig=${photoSig(urlPath, exp)}`;
 };
 const publicDevice = ({ secretHash, ...device }) => device;
 // 运行时配置：存在 data/runtime-config.json，改文件或调 PUT 接口即生效，无需重启、无需重装 App
 const defaultRuntimeConfig = {
   schemaVersion: 1,
-  iceServers: null,          // null = 用服务端 .env 的 ICE_SERVERS
+  iceServers: null,          // null = 设备使用信令下发（watch:start）的带时效 ICE，不再公开静态凭据
   features: { photos: true, burst: true, screenLockCapture: true, cameraSwitch: true, photoUpload: true },
   photoSettings: { burstCount: 5, intervalMs: 300, order: ['front', 'back'] },
   captureThresholdSeconds: 10,   // 离开前台超过多少秒才拍照（区分下拉状态栏与锁屏）
@@ -234,7 +267,14 @@ app.get('/api/version', (_req, res) => {
   });
 });
 app.use(express.static(path.join(root, 'web')));
-app.use('/photos', express.static(photosDir, { maxAge: 0, index: false }));
+app.use('/photos', (req, res, next) => {
+  const urlPath = req.originalUrl.split('?')[0];
+  const exp = Number(req.query.exp || 0);
+  const sig = String(req.query.sig || '');
+  const expected = photoSig(urlPath, exp);
+  if (!exp || exp < Date.now() || sig.length !== expected.length || !safeEqual(sig, expected)) return res.status(403).send('Forbidden');
+  next();
+}, express.static(photosDir, { maxAge: 0, index: false }));
 const requireUser = (req, res, next) => {
   const auth = verify(req.headers.authorization?.replace(/^Bearer /, ''));
   if (!auth?.role || !['admin', 'member'].includes(auth.role)) return res.status(401).json({ error: 'Unauthorized' });
@@ -248,17 +288,28 @@ app.post('/api/auth/login', guard('login', LOGIN_LIMIT, 15 * 60 * 1000), (req, r
   resetRateLimit(`login:${clientIp(req)}`);
   res.json({ token: sign({ role }), role });
 });
+app.post('/api/auth/logout', requireUser, (req, res) => {
+  if (req.user.jti) { db.revokedTokens.push({ jti: req.user.jti, exp: req.user.exp }); save(); }
+  res.json({ ok: true });
+});
+app.post('/api/auth/revoke-all', requireUser, requireAdmin, (req, res) => {
+  db.tokenVersion = (db.tokenVersion || 0) + 1;
+  db.revokedTokens = [];
+  save();
+  for (const [socketId, socket] of viewerSockets) if ((socket.data.tokenVer || 0) < db.tokenVersion) socket.disconnect(true);
+  res.json({ ok: true, tokenVersion: db.tokenVersion });
+});
 app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(deviceView)));
-app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers }));
-// 运行时配置：App 启动拉取；登录用户可改，改完立即生效
+app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers: activeIceServers() }));
+// 运行时配置：App 启动拉取；不再公开静态 ICE/TURN 凭据（设备走信令下发）
 app.get('/api/config', (_req, res) => {
-  const cfg = readRuntimeConfig();
-  res.json({ ...cfg, iceServers: cfg.iceServers || iceServers });
+  const { iceServers: _stored, ...cfg } = readRuntimeConfig();
+  res.json({ ...cfg, iceServers: [] });  // 历史文件里即使残留静态凭据也绝不下发
 });
 app.put('/api/config', requireUser, (req, res) => {
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const patch = {};
-  if (body.iceServers !== undefined) patch.iceServers = body.iceServers;
+  // iceServers 不再接受外部写入，凭据由 TURN_SECRET 动态生成
   if (body.features !== undefined) patch.features = { ...readRuntimeConfig().features, ...body.features };
   if (body.photoSettings !== undefined) patch.photoSettings = { ...readRuntimeConfig().photoSettings, ...body.photoSettings };
   if (body.captureThresholdSeconds !== undefined) patch.captureThresholdSeconds = Number(body.captureThresholdSeconds);
@@ -273,7 +324,8 @@ app.post('/api/photos', express.raw({ type: 'image/jpeg', limit: '10mb' }), (req
   const secret = String(req.headers['x-device-secret'] || '');
   const camera = req.headers['x-camera'] === 'front' ? 'front' : 'back';
   const device = db.devices.find((d) => d.id === deviceId);
-  if (!device || device.unpairedAt || !secret || digest(secret) !== device.secretHash) return res.status(401).json({ error: 'Unauthorized' });
+  const secretHash = secret ? digest(secret) : '';
+  if (!device || device.unpairedAt || !secret || secretHash.length !== String(device.secretHash || '').length || !safeEqual(secretHash, device.secretHash)) return res.status(401).json({ error: 'Unauthorized' });
   const body = req.body;
   if (!Buffer.isBuffer(body) || body.length < 100 || body.length > 10 * 1024 * 1024) return res.status(400).json({ error: 'Invalid image' });
   const dir = devicePhotosDir(deviceId, camera);
@@ -311,7 +363,7 @@ app.get('/api/photos', requireUser, (req, res) => {
     const urlPrefix = dir === scoped ? `/photos/${deviceId}/${camera}` : `/photos/${camera}`;
     if (!fs.existsSync(dir)) return [];
     return fs.readdirSync(dir).filter((f) => f.endsWith('.jpg'))
-      .map((f) => { const st = fs.statSync(path.join(dir, f)); return { name: f, url: `${urlPrefix}/${f}`, takenAt: st.mtimeMs }; })
+      .map((f) => { const st = fs.statSync(path.join(dir, f)); return { name: f, url: signedPhotoUrl(`${urlPrefix}/${f}`), takenAt: st.mtimeMs }; })
       .sort((a, b) => a.takenAt - b.takenAt);
   };
   const groupsOf = (camera) => groupPhotos(list(camera)).slice(-count).reverse()
@@ -342,7 +394,7 @@ app.post('/api/devices/pair', guard('pair', PAIR_LIMIT, PAIR_WINDOW_MS), guard('
   // 配对码一次性：通知所有观看端该码已消费，隐藏配对提示并显示配对成功
   io.to('viewers').emit('pairing:result', { status: 'paired', code: String(req.body?.code || ''), deviceId: device.id, name: device.name });
   resetRateLimit(`pair:${clientIp(req)}`);
-  res.status(201).json({ device: publicDevice(device), deviceSecret: secret, iceServers });
+  res.status(201).json({ device: publicDevice(device), deviceSecret: secret, iceServers: activeIceServers() });
 });
 app.patch('/api/devices/:id', requireUser, (req, res) => {
   const device = db.devices.find((d) => d.id === req.params.id);
@@ -381,9 +433,10 @@ syncLatestRelease();
 setInterval(syncLatestRelease, 300000).unref();
 // 配对码过期清理：观看端按 expiresAt 本地倒计时提示失效，这里只负责清库
 setInterval(() => {
-  const before = db.pairingCodes.length;
+  const before = db.pairingCodes.length + db.revokedTokens.length;
   db.pairingCodes = db.pairingCodes.filter((p) => p.expiresAt > Date.now());
-  if (db.pairingCodes.length !== before) save();
+  db.revokedTokens = db.revokedTokens.filter((r) => r.exp > Date.now());
+  if (db.pairingCodes.length + db.revokedTokens.length !== before) save();
 }, 30000).unref();
 const io = new Server(httpServer, { cors: { origin: false } });
 const deviceSockets = new Map();
@@ -400,13 +453,14 @@ const notify = (deviceId, status) => { deviceStatus(deviceId, status); broadcast
 
 io.use((socket, next) => {
   const auth = verify(socket.handshake.auth?.token);
-  if (auth?.role === 'admin' || auth?.role === 'member') { socket.data.role = 'viewer'; socket.data.viewerRole = auth.role; return next(); }
+  if (auth?.role === 'admin' || auth?.role === 'member') { socket.data.role = 'viewer'; socket.data.viewerRole = auth.role; socket.data.tokenVer = auth.ver || 0; return next(); }
   // The Swift Socket.IO client supplies credentials as connection parameters;
   // browser and Android clients use the Socket.IO auth object.
   const deviceId = socket.handshake.auth?.deviceId ?? socket.handshake.query?.deviceId;
   const secret = socket.handshake.auth?.deviceSecret ?? socket.handshake.query?.deviceSecret;
   const device = db.devices.find((d) => d.id === deviceId);
-  if (device && !device.unpairedAt && secret && digest(secret) === device.secretHash) { socket.data.role = 'device'; socket.data.deviceId = deviceId; return next(); }
+  const secretHash = secret ? digest(secret) : '';
+  if (device && !device.unpairedAt && secretHash.length === String(device.secretHash || '').length && safeEqual(secretHash, device.secretHash)) { socket.data.role = 'device'; socket.data.deviceId = deviceId; return next(); }
   next(new Error('Unauthorized'));
 });
 io.on('connection', (socket) => {
@@ -426,7 +480,7 @@ io.on('connection', (socket) => {
       if (Date.now() - last > RESUME_DEBOUNCE_MS) {
         resumeTimers.set(deviceId, Date.now());
         console.log(`[device] ${deviceId} resumed with viewer ${activeViewerId}`);
-        socket.emit('watch:resumed', { viewerId: activeViewerId, iceServers });
+        socket.emit('watch:resumed', { viewerId: activeViewerId, iceServers: activeIceServers() });
         viewerSockets.get(activeViewerId)?.emit('watch:resume', { deviceId });
       } else {
         console.log(`[device] ${deviceId} resume suppressed (debounce)`);
@@ -438,7 +492,7 @@ io.on('connection', (socket) => {
     const device = deviceSockets.get(deviceId);
     if (!device) return callback({ error: 'Device is offline' });
     if (activeViews.has(deviceId)) return callback({ error: 'Device is already being watched' });
-    activeViews.set(deviceId, socket.id); device.emit('watch:start', { viewerId: socket.id, iceServers }); deviceStatus(deviceId, 'connecting'); callback({ ok: true });
+    activeViews.set(deviceId, socket.id); device.emit('watch:start', { viewerId: socket.id, iceServers: activeIceServers() }); deviceStatus(deviceId, 'connecting'); callback({ ok: true });
   });
   socket.on('watch:accepted', ({ viewerId }) => {
     if (socket.data.role === 'device' && activeViews.get(socket.data.deviceId) === viewerId) viewerSockets.get(viewerId)?.emit('watch:accepted', { deviceId: socket.data.deviceId });
@@ -459,14 +513,24 @@ io.on('connection', (socket) => {
     deviceSockets.delete(deviceId);
     io.to('viewers').emit('device:unpaired', { deviceId, name: device?.name || '' });
     broadcastDevices();
+    socket.disconnect(true);  // 解绑后旧连接不能继续发 signal/state
   });
   socket.on('camera:switch', ({ deviceId }) => {
     if (socket.data.role !== 'viewer' || activeViews.get(deviceId) !== socket.id) return;
     deviceSockets.get(deviceId)?.emit('camera:switch');
   });
   socket.on('signal', ({ targetId, data }) => {
-    if (!targetId || !data) return;
-    const target = socket.data.role === 'device' ? viewerSockets.get(targetId) : deviceSockets.get(targetId);
+    if (!targetId || !data || typeof data !== 'object') return;
+    let target;
+    if (socket.data.role === 'viewer') {
+      // 只能给「自己正在观看的设备」发信令，不能向他人会话注入 SDP
+      if (activeViews.get(targetId) !== socket.id) return;
+      target = deviceSockets.get(targetId);
+    } else if (socket.data.role === 'device') {
+      // 设备只能回给当前持有会话的那个观看端
+      if (activeViews.get(socket.data.deviceId) !== targetId) return;
+      target = viewerSockets.get(targetId);
+    } else return;
     // 观看端按 deviceId 校验来源；socket.id 与配对生成的 deviceId 不同，必须发业务 id
     const fromId = socket.data.role === 'device' ? socket.data.deviceId : socket.id;
     target?.emit('signal', { fromId, data });
@@ -492,7 +556,7 @@ io.on('connection', (socket) => {
     if (Date.now() - last <= RESUME_DEBOUNCE_MS) { console.log(`[device] ${target} resume suppressed (debounce)`); return; }
     resumeTimers.set(target, Date.now());
     console.log(`[device] ${target} resume -> viewer ${viewerId}`);
-    socket.emit('watch:resumed', { viewerId, iceServers });
+    socket.emit('watch:resumed', { viewerId, iceServers: activeIceServers() });
     viewerSockets.get(viewerId)?.emit('watch:resume', { deviceId: target });
   });
   socket.on('stream:state', ({ state }) => {

@@ -48,6 +48,7 @@ class PhotoUploader(private val context: Context) {
             onLog("未配对，跳过拍照")
             return
         }
+        if (!serverUrl.startsWith("https://")) { onLog("服务器地址必须使用 HTTPS，请重新配对"); return }
         val cfg = RuntimeConfig.snapshot()
         if (!cfg.photoUpload || !cfg.photos) {
             onLog("配置已关闭照片上传")

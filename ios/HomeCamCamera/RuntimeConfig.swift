@@ -87,7 +87,8 @@ final class RuntimeConfig {
     }
 
     private func apply(_ p: Payload) {
-        if let s = p.iceServers { iceServers = s }
+        // 服务端不再公开静态 TURN 凭据，返回空数组时回退到信令下发的 ICE
+        if let s = p.iceServers { iceServers = s.isEmpty ? nil : s }
         if let f = p.features {
             if let v = f.photos { enablePhotos = v }
             if let v = f.burst { enableBurst = v }
