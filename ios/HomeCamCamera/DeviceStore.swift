@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 struct DeviceCredentials: Codable {
     let serverURL: URL; let deviceID: String; let deviceSecret: String; let name: String
