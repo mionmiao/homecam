@@ -241,7 +241,7 @@ class CameraService : Service() {
             // 服务未连接（被系统回收后重启）：先建连再发解绑
             connect()
             handler.postDelayed(finish, 800)
-        } else finish()
+        } else finish.run()
     }
 
     private fun sendSignal(data: JSONObject) {
