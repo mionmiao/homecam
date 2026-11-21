@@ -56,12 +56,21 @@ enum UpdateChecker {
         }.resume()
     }
 
-    /// 复制安装链接到剪贴板，由用户在 LiveContainer 的「+」→ Install from URL 手动粘贴安装。
-    /// 不再调用 livecontainer://install（它会把安装排队，需要重启 LiveContainer 才生效，容易误导）。
+    /// 一键更新：调起 SideStore 直接安装新版 IPA（官方支持 sidestore://install?url=）。
+    /// 这是真正的覆盖安装，不像 LiveContainer 的 install scheme 会排队且需重启容器。
+    /// SideStore 未安装时降级为复制直链。
     @discardableResult
-    static func copyInstallLink(url: String) -> String {
-        guard URL(string: url) != nil else { return "下载地址无效" }
+    static func install(url: String) -> String {
+        guard let ipa = URL(string: url) else { return "下载地址无效" }
+        var components = URLComponents()
+        components.scheme = "sidestore"
+        components.host = "install"
+        components.queryItems = [URLQueryItem(name: "url", value: ipa.absoluteString)]
+        if let installURL = components.url, UIApplication.shared.canOpenURL(installURL) {
+            UIApplication.shared.open(installURL)
+            return "已调起 SideStore 安装新版，装完后从 SideStore 启动即可"
+        }
         UIPasteboard.general.string = url
-        return "安装链接已复制。请打开 LiveContainer → 点「+」→ Install from URL → 粘贴链接安装，装完重启 LiveContainer 后从列表启动本 App"
+        return "未检测到 SideStore，安装链接已复制：请打开 SideStore → 从文件/URL 安装，或粘贴链接"
     }
 }

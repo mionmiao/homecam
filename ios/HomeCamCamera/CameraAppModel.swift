@@ -196,11 +196,10 @@ final class CameraAppModel: ObservableObject {
         }
     }
 
-    /// 复制新版安装链接（用户在 LiveContainer 里手动粘贴安装）
+    /// 安装更新（调起 SideStore 覆盖安装）
     func installUpdate(_ info: UpdateInfo) {
-        // 优先用配对时的 serverURL 拼直链，避免依赖服务端返回的 host
         let link = store.load()?.serverURL.appending(path: "releases/HomeCamCamera.ipa").absoluteString ?? info.ipaUrl
-        let message = UpdateChecker.copyInstallLink(url: link)
+        let message = UpdateChecker.install(url: link)
         notice = .message(message)
         statusText = message
     }

@@ -56,7 +56,7 @@ struct CameraHomeView: View {
                     Section("iPhone 使用说明") {
                         Text("保持此 App 在前台，网页端点击“开始观看”后才会开启采集。进入后台会自动停止直播，锁屏超过 10 秒解锁后会自动拍照上传。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text("版本更新：点「检查更新」查看是否有新版。有新版时弹窗点「复制安装链接」，再到 LiveContainer 里 Install from URL 粘贴安装。")
+                        Text("版本更新：点「检查更新」查看是否有新版。有新版时弹窗点「立即更新」，调起 SideStore 覆盖安装。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
             }
@@ -67,7 +67,7 @@ struct CameraHomeView: View {
             ), presenting: model.notice) { notice in
                 switch notice {
                 case .update(let info):
-                    Button("复制安装链接") { model.installUpdate(info) }
+                    Button("立即更新") { model.installUpdate(info) }
                     Button("稍后", role: .cancel) { model.deferUpdate(info) }
                 case .message:
                     Button("好") { model.notice = nil }
@@ -75,7 +75,7 @@ struct CameraHomeView: View {
             } message: { notice in
                 switch notice {
                 case .update(let info):
-                    Text("当前 build \(UpdateChecker.localBuild) → 最新 build \(info.build)\(info.version.isEmpty ? "" : "（\(info.version)）")\n\n点「复制安装链接」后，打开 LiveContainer → 点「+」→ Install from URL → 粘贴链接安装。装完需重启 LiveContainer，再从列表启动本 App。\n\n\(info.hint.isEmpty ? "" : info.hint + "\n\n")\(info.notes)")
+                    Text("当前 build \(UpdateChecker.localBuild) → 最新 build \(info.build)\(info.version.isEmpty ? "" : "（\(info.version)）")\n\n点「立即更新」调起 SideStore 覆盖安装（真覆盖，不用重启容器）。若未装 SideStore，会复制直链供手动安装。\n\n\(info.hint.isEmpty ? "" : info.hint + "\n\n")\(info.notes)")
                 case .message(let text):
                     Text(text)
                 }

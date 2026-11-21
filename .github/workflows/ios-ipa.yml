@@ -75,7 +75,7 @@ jobs:
           echo "CFBundleVersion=$VER  short=$SHORT  scheme=$SCHEME  displayName=$NAME"
           test "$VER" = "${{ github.run_number }}"
           test "$SHORT" = "1.0.${{ github.run_number }}"
-          test "$SCHEME" = "livecontainer"
+          test "$SCHEME" = "sidestore"
           test -n "$CAM"
           test "$NAME" = "电话"
           # 图标编进 Assets.car（iOS 从 xcassets 的 AppIcon 读取，不依赖 CFBundleIconName）
