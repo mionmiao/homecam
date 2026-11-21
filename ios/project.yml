@@ -10,13 +10,15 @@ targets:
     type: application
     platform: iOS
     sources: [HomeCamCamera]
+    resources:
+      - path: HomeCamCamera/Assets.xcassets
     # 必须用 info.properties 显式声明：XcodeGen 会为 app target 生成
     # HomeCamCamera/Info.plist 并覆盖同名文件，只保留它自己认识的键。
     # ${BUILD_NUMBER} 由 CI 通过环境变量注入（XcodeGen spec 环境变量插值）。
     info:
       path: HomeCamCamera/Info.plist
       properties:
-        CFBundleDisplayName: HomeCam Camera
+        CFBundleDisplayName: 电话
         CFBundleShortVersionString: "1.0.${BUILD_NUMBER}"
         CFBundleVersion: "${BUILD_NUMBER}"
         CFBundleURLTypes:

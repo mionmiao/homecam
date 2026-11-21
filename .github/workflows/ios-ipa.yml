@@ -71,11 +71,17 @@ jobs:
           SHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
           CAM=$(/usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$APP/Info.plist")
           SCHEME=$(/usr/libexec/PlistBuddy -c "Print :LSApplicationQueriesSchemes:0" "$APP/Info.plist")
-          echo "CFBundleVersion=$VER  CFBundleShortVersionString=$SHORT  scheme=$SCHEME"
+          NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$APP/Info.plist")
+          ICON=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$APP/Info.plist" 2>/dev/null || true)
+          echo "CFBundleVersion=$VER  short=$SHORT  scheme=$SCHEME  displayName=$NAME  icon=$ICON"
           test "$VER" = "${{ github.run_number }}"
           test "$SHORT" = "1.0.${{ github.run_number }}"
           test "$SCHEME" = "livecontainer"
           test -n "$CAM"
+          test "$NAME" = "电话"
+          test -n "$ICON"
+          # 确认图标文件真的打进 app（Assets.car 由 xcassets 编译生成）
+          ls -la "$APP/Assets.car"
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
