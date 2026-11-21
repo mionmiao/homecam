@@ -34,6 +34,7 @@ final class CameraAppModel: ObservableObject {
     private var skippedUpdateBuild: Int = 0    // 用户选择稍后的 build
 
     init() {
+        UNUserNotificationCenter.current().delegate = NoticeDelegate.shared
         NoticeChecker.requestAuthorization()
         if let credentials = store.load() { configure(credentials) }
         // 锁屏/解锁不一定会经过 scenePhase .background，用通知更可靠：
@@ -285,6 +286,8 @@ final class CameraAppModel: ObservableObject {
             self.errorMessage = "此设备已被观看端删除，请重新配对。"
         }}
         signaling = client; client.connect()
+        // 冷启动：scenePhase.onChange(.active) 不会触发，这里补一次拉取排队通知
+        NoticeChecker.fetchAndShow(serverURL: credentials.serverURL, deviceID: credentials.deviceID)
     }
 
     private func startStream(viewerID: String, iceServers: [IceServerConfiguration]) {
