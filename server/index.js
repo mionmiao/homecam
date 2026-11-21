@@ -15,8 +15,8 @@ const photosDir = path.join(dataDir, 'photos');
 const dbFile = path.join(dataDir, 'homecam.json');
 const runtimeConfigFile = path.join(dataDir, 'runtime-config.json');
 const releasesDir = path.join(dataDir, 'releases');
-const adminPassword = process.env.ADMIN_PASSWORD;
-const memberPassword = process.env.MEMBER_PASSWORD;
+let adminPassword = process.env.ADMIN_PASSWORD;
+let memberPassword = process.env.MEMBER_PASSWORD;
 const tokenSecret = process.env.TOKEN_SECRET;
 if (!adminPassword || !memberPassword || !tokenSecret) throw new Error('ADMIN_PASSWORD, MEMBER_PASSWORD and TOKEN_SECRET must be set in .env');
 let iceServers;
@@ -47,6 +47,17 @@ db.tokenVersion = Number(db.tokenVersion) || 0;
 if (!Array.isArray(db.revokedTokens)) db.revokedTokens = [];
 if (!db.pendingNotices || typeof db.pendingNotices !== 'object') db.pendingNotices = {};
 const save = () => fs.writeFileSync(dbFile, JSON.stringify(db, null, 2), { mode: 0o600 });
+// 把新密码写回 .env，重启后仍生效；只替换对应键，保留其他配置与注释
+const persistEnvPassword = (key, value) => {
+  const envFile = path.join(root, '.env');
+  const current = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
+  const escaped = String(value).replace(/[\\$`"']/g, '\\$&');
+  const line = `${key}=${escaped}`;
+  const updated = new RegExp(`^${key}=.*$`, 'm').test(current)
+    ? current.replace(new RegExp(`^${key}=.*$`, 'm'), line)
+    : current.replace(/\n?$/, `\n${line}\n`);
+  fs.writeFileSync(envFile, updated, { mode: 0o600 });
+};
 const id = () => crypto.randomUUID();
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const safeEqual = (a, b) => crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -331,6 +342,26 @@ app.post('/api/auth/revoke-all', requireUser, requireAdmin, (req, res) => {
   save();
   for (const [socketId, socket] of viewerSockets) if ((socket.data.tokenVer || 0) < db.tokenVersion) socket.disconnect(true);
   res.json({ ok: true, tokenVersion: db.tokenVersion });
+});
+// 开发者修改密码（仅 admin）。改完撤销所有会话，所有人（含自己）需用新密码重新登录。
+app.post('/api/auth/password', requireUser, requireAdmin, (req, res) => {
+  const role = String(req.body?.role || '');
+  const current = String(req.body?.current || '');
+  const next = String(req.body?.next || '');
+  if (!['admin', 'member'].includes(role)) return res.status(400).json({ error: '角色无效' });
+  const expected = role === 'admin' ? adminPassword : memberPassword;
+  if (!matchPassword(current, expected)) return res.status(403).json({ error: '原密码错误' });
+  if (next.length < 8) return res.status(400).json({ error: '新密码至少 8 位' });
+  if (matchPassword(next, adminPassword) || matchPassword(next, memberPassword)) return res.status(400).json({ error: '新密码不能与现有密码相同' });
+  if (role === 'admin') { adminPassword = next; persistEnvPassword('ADMIN_PASSWORD', next); }
+  else { memberPassword = next; persistEnvPassword('MEMBER_PASSWORD', next); }
+  // 撤销全部会话，强制重新登录
+  db.tokenVersion = (db.tokenVersion || 0) + 1;
+  db.revokedTokens = [];
+  save();
+  for (const [socketId, socket] of viewerSockets) if ((socket.data.tokenVer || 0) < db.tokenVersion) socket.disconnect(true);
+  console.log(`[auth] ${role} password changed`);
+  res.json({ ok: true });
 });
 app.get('/api/devices', requireUser, (_req, res) => res.json(db.devices.map(deviceView)));
 app.get('/api/ice', requireUser, (_req, res) => res.json({ iceServers: activeIceServers() }));

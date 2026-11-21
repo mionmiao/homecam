@@ -186,6 +186,18 @@ $('#revokeAllButton').onclick = async () => {
   try { await api('/api/auth/revoke-all', { method: 'POST' }); expire(); } catch (e) { alert(e.message); }
 };
 $('#copyDiagButton').onclick = copyDiag;
+$('#pwSubmit').onclick = async () => {
+  const result = $('#pwResult');
+  const role = $('#pwRole').value, current = $('#pwCurrent').value, next = $('#pwNext').value;
+  result.hidden = false; result.textContent = '';
+  if (!current || !next) return void (result.textContent = '请填写原密码和新密码');
+  if (!confirm('确认修改密码？修改后所有人（含你自己）需重新登录。')) return;
+  try {
+    await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ role, current, next }) });
+    $('#pwCurrent').value = ''; $('#pwNext').value = '';
+    expire();  // 会话已全部失效，回登录页
+  } catch (e) { result.textContent = e.message; }
+};
 function setPairNotice(text, kind = '') { const n = $('#pairing'); if (!n) return; n.hidden = false; n.textContent = text; n.className = 'notice' + (kind ? ' ' + kind : ''); }
 $('#pairButton').onclick = async () => {
   try {
