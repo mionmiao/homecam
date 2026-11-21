@@ -297,7 +297,7 @@ app.use('/photos', (req, res, next) => {
 // 同时保留 Authorization: Bearer 作为兼容（旧客户端/脚本）。
 const parseCookies = (header) => Object.fromEntries(
   String(header || '').split(';').map((p) => p.trim().split('=')).filter(([k, v]) => k && v !== undefined)
-    .map(([k, v]) => [k, decodeURIComponent(v)])
+    .map(([k, v]) => { try { return [k, decodeURIComponent(v)]; } catch { return [k, v]; } })
 );
 const tokenFrom = (headers) => parseCookies(headers?.cookie).homecam_token || String(headers?.authorization || '').replace(/^Bearer /, '');
 const cookieOptions = (req) => ({
