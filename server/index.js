@@ -232,6 +232,12 @@ function deviceView(d) {
 function broadcastDevices() { io.to('viewers').emit('devices', db.devices.map(deviceView)); }
 
 const app = express();
+app.use((_req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'no-referrer');
+  next();
+});
 app.use(express.json({ limit: '12mb' }));
 // 观看端自动更新：计算 web 资源指纹，并在 index.html 注入当前版本，
 // 前端据此比对判断是否有新版本（正在观看时不自动刷新，避免断流）
@@ -306,7 +312,7 @@ app.get('/api/config', (_req, res) => {
   const { iceServers: _stored, ...cfg } = readRuntimeConfig();
   res.json({ ...cfg, iceServers: [] });  // 历史文件里即使残留静态凭据也绝不下发
 });
-app.put('/api/config', requireUser, (req, res) => {
+app.put('/api/config', requireUser, requireAdmin, (req, res) => {
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const patch = {};
   // iceServers 不再接受外部写入，凭据由 TURN_SECRET 动态生成
@@ -497,9 +503,9 @@ io.on('connection', (socket) => {
   socket.on('watch:accepted', ({ viewerId }) => {
     if (socket.data.role === 'device' && activeViews.get(socket.data.deviceId) === viewerId) viewerSockets.get(viewerId)?.emit('watch:accepted', { deviceId: socket.data.deviceId });
   });
-  socket.on('device:diagnostic', ({ deviceId, message }) => {
+  socket.on('device:diagnostic', ({ message }) => {
     if (socket.data.role !== 'device') return;
-    io.to('viewers').emit('device:diagnostic', { deviceId, message: String(message || '').slice(0, 300) });
+    io.to('viewers').emit('device:diagnostic', { deviceId: socket.data.deviceId, message: String(message || '').slice(0, 300) });
   });
   // 手机端主动「停止配对」：不再删除设备，改为标记失效；观看端保留卡片并标注「已失效·手机端已解绑」
   socket.on('device:unpair', () => {
@@ -543,9 +549,10 @@ io.on('connection', (socket) => {
   socket.on('watch:stop', ({ deviceId }) => stop(deviceId, socket.id));
   // 设备因网络切换（WiFi↔蜂窝）重连后请求恢复观看会话：把当前 viewerId 回传，
   // 由设备重建 peer 并重新协商（ICE restart 在非 trickle 下不可靠）。
-  socket.on('watch:resume', ({ deviceId }) => {
+  socket.on('watch:resume', () => {
     if (socket.data.role !== 'device') return;
-    const target = deviceId || socket.data.deviceId;
+    // 只认连接认证出的设备，忽略客户端传来的 deviceId，防止跨设备探测/干扰他人会话
+    const target = socket.data.deviceId;
     const viewerId = activeViews.get(target);
     if (!viewerId) {
       // 会话已释放：不要给设备发 watch:stop（那会彻底终止），让它继续等待并重试
