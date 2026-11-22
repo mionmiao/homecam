@@ -24,4 +24,6 @@
 
 解锁手机后会自动用前后置各拍 5 张并上传（直播中跳过）；运行时参数（ICE、拍照开关/连拍参数、阈值）由服务端 `/api/config` 下发，改完在应用内点「刷新运行时配置」即可生效。
 
+每次构建后把新 APK 同步到本机 Z 盘：`python scripts/sync_apk.py`（默认 `Z:\Android\HomeCamCamera.apk`）。脚本从 Release `android-debug` 下载并用 SHA-256 校验，原子替换；已是最新版本会跳过。
+
 > iOS 摄像头端已实现（见 `ios/README.md`），通过 LiveContainer + SideStore 用免费 Apple ID 侧载，构建产出的未签名 IPA 在 GitHub Release 的 `ios-unsigned` 中下载。iOS 不允许可靠地在后台被远程唤醒并持续开启摄像头，因此 iOS 端只承诺前台待命：配对后维持待命连接，开始观看才启用采集，切到后台立即停止。
