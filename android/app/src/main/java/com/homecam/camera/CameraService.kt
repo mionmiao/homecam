@@ -75,6 +75,7 @@ class CameraService : Service() {
 
     private lateinit var socket: Socket
     private var viewerId: String? = null
+    private var audioOn = true
     private var lastCaptureAt = 0L
     private var lastRebuildAt = 0L
     private var lastNetworkChange = 0L
@@ -145,6 +146,7 @@ class CameraService : Service() {
             if (id.isBlank()) return@on
             diag("watch:start $id")
             viewerId = id
+            audioOn = if (message.has("audio")) message.optBoolean("audio") else !message.optBoolean("audioOnly")
             startStream(id, message.optJSONArray("iceServers"))
         }
         socket.on("watch:resumed") { args ->
@@ -179,6 +181,11 @@ class CameraService : Service() {
         socket.on("camera:switch") { args ->
             if (RuntimeConfig.snapshot().cameraSwitch) streamer.switchCamera()
         }
+        socket.on("stream:audio") { args ->
+            val enabled = (args.firstOrNull() as? JSONObject)?.optBoolean("enabled", true) ?: true
+            audioOn = enabled
+            streamer.setAudioEnabled(enabled)
+        }
         socket.on("device:removed") { args ->
             prefs.edit().remove("deviceId").apply()
             SecureStore.clearSecret(this@CameraService)
@@ -201,7 +208,7 @@ class CameraService : Service() {
             ?.map { IceServerSpec(it.urls, it.username, it.credential) }
             ?: parseIceServers(fallbackIce)
         try {
-            streamer.start(effectiveIce)
+            streamer.start(effectiveIce, audioOn)
             emit("watch:accepted", JSONObject().put("viewerId", id))
         } catch (e: Exception) {
             diag("start failed: ${e.message}")

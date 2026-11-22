@@ -257,7 +257,7 @@ final class CameraAppModel: ObservableObject {
             self.statusText = self.isStreaming ? "连接已恢复，正在直播" : "连接已恢复，待命中：摄像头和麦克风未启用"
             // 服务端在设备重连时会主动下发 watch:resumed 触发重新协商，此处无需重复请求
         }}
-        client.onWatchStart = { [weak self] viewerID, iceServers, audioOnly in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers, audioOnly: audioOnly) } }
+        client.onWatchStart = { [weak self] viewerID, iceServers, audioOnly, audioEnabled in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers, audioOnly: audioOnly, audioEnabled: audioEnabled) } }
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
         client.onWatchStop = { [weak self] in Task { @MainActor in
             guard let self, self.isStreaming else { return }  // 已停止时不再 stop，避免 idle 上报死循环
@@ -274,6 +274,10 @@ final class CameraAppModel: ObservableObject {
         client.onSwitchCamera = { [weak self] in Task { @MainActor in
             guard RuntimeConfig.shared.enableCameraSwitch else { return }
             self?.stream.switchCamera()
+        } }
+        client.onSetAudio = { [weak self] enabled in Task { @MainActor in
+            guard let self, self.stream.isActive else { return }
+            self.stream.setAudioEnabled(enabled)
         } }
         client.onDiagnostic = { [weak self] message in Task { @MainActor in self?.signaling?.sendDiagnostic(message) } }
         client.onNotice = { title, body in
@@ -292,7 +296,7 @@ final class CameraAppModel: ObservableObject {
         NoticeChecker.fetchAndShow(serverURL: credentials.serverURL, deviceID: credentials.deviceID)
     }
 
-    private func startStream(viewerID: String, iceServers: [IceServerConfiguration], audioOnly: Bool = false) {
+    private func startStream(viewerID: String, iceServers: [IceServerConfiguration], audioOnly: Bool = false, audioEnabled: Bool = true) {
         Task {
             do {
                 // iOS cannot reliably capture in the background; decline instead of
@@ -307,7 +311,7 @@ final class CameraAppModel: ObservableObject {
                 let effectiveIce = RuntimeConfig.shared.iceServers ?? iceServers
                 // 网络切换后重建：先停掉旧 peer（不上报 idle，避免服务端释放会话），再新建重新协商
                 if self.stream.isActive { self.stream.stop("rebuild", notifyState: false) }
-                try stream.start(viewerID: viewerID, iceServers: effectiveIce, audioOnly: audioOnly)
+                try stream.start(viewerID: viewerID, iceServers: effectiveIce, audioOnly: audioOnly, audioEnabled: audioEnabled)
                 // 手机做 offerer：先告诉观看端已接受，等 candidate 收齐后发 offer
                 signaling?.acceptWatch(viewerID: viewerID)
                 stream.createOffer { [weak self] sdp in self?.signaling?.sendOffer(sdp) }

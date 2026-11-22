@@ -41,6 +41,8 @@ class WebRtcStreamer(private val context: Context, private val callbacks: Callba
     private var capturer: VideoCapturer? = null
     private var videoSource: VideoSource? = null
     private var audioSource: org.webrtc.AudioSource? = null
+    private var audioSender: org.webrtc.RtpSender? = null
+    private var audioEnabled = true
     private var helper: SurfaceTextureHelper? = null
     private var frontCamera = true
     private var state = State.IDLE
@@ -74,9 +76,10 @@ class WebRtcStreamer(private val context: Context, private val callbacks: Callba
     }
 
     @Synchronized
-    fun start(iceSpecs: List<IceServerSpec>) {
+    fun start(iceSpecs: List<IceServerSpec>, audioOn: Boolean = true) {
         if (peer != null) return
         stopping = false
+        audioEnabled = audioOn
         remoteReady = false
         localCandidates.clear()
         remoteCandidates.clear()
@@ -147,9 +150,37 @@ class WebRtcStreamer(private val context: Context, private val callbacks: Callba
         val videoTrack = f.createVideoTrack("video", videoSource)
         videoTrack.setEnabled(true)
         peer!!.addTrack(videoTrack, listOf("homecam"))
-        audioSource = f.createAudioSource(MediaConstraints())
-        peer!!.addTrack(f.createAudioTrack("audio", audioSource), listOf("homecam"))
+        if (audioOn) addAudioTrack(f)
         setState(State.CONNECTING)
+        createOffer()
+    }
+
+    // 动态开/关麦克风：同一 peer 加减音轨后重新 createOffer，不断流
+    private fun addAudioTrack(f: PeerConnectionFactory) {
+        val p = peer ?: return
+        if (audioSender != null) return
+        val source = f.createAudioSource(MediaConstraints())
+        val track = f.createAudioTrack("audio", source)
+        audioSource = source
+        audioSender = p.addTrack(track, listOf("homecam"))
+    }
+
+    private fun removeAudioTrack() {
+        val p = peer ?: return
+        audioSender?.let { p.removeTrack(it) }
+        audioSender = null
+        try { audioSource?.dispose() } catch (_: Exception) {}
+        audioSource = null
+    }
+
+    fun setAudioEnabled(enabled: Boolean) {
+        val p = peer ?: return
+        audioEnabled = enabled
+        if (enabled) addAudioTrack(factory ?: return) else removeAudioTrack()
+        callbacks.onDiagnostic("setAudioEnabled=$enabled, renegotiate")
+        localCandidates.clear()
+        baseSdp = ""
+        sendRunnable?.let { handler.removeCallbacks(it) }
         createOffer()
     }
 
@@ -282,6 +313,7 @@ class WebRtcStreamer(private val context: Context, private val callbacks: Callba
         videoSource = null
         try { audioSource?.dispose() } catch (_: Exception) {}
         audioSource = null
+        audioSender = null
         try { helper?.dispose() } catch (_: Exception) {}
         helper = null
         try { peer?.close() } catch (_: Exception) {}

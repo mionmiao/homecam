@@ -580,14 +580,14 @@ io.on('connection', (socket) => {
       }
     }
   }
-  socket.on('watch:start', ({ deviceId, audioOnly = false }, callback = () => {}) => {
+  socket.on('watch:start', ({ deviceId, audioOnly = false, audio = !audioOnly }, callback = () => {}) => {
     if (socket.data.role !== 'viewer') return callback({ error: 'Unauthorized' });
     const device = deviceSockets.get(deviceId);
     if (!device) return callback({ error: 'Device is offline' });
     if (activeViews.has(deviceId)) return callback({ error: 'Device is already being watched' });
     const mode = audioOnly ? 'audio' : 'video';
-    activeViews.set(deviceId, socket.id); device.emit('watch:start', { viewerId: socket.id, iceServers: activeIceServers(), audioOnly: !!audioOnly }); deviceStatus(deviceId, 'connecting'); callback({ ok: true });
-    console.log(`[watch] ${deviceId} start mode=${mode}`);
+    activeViews.set(deviceId, socket.id); device.emit('watch:start', { viewerId: socket.id, iceServers: activeIceServers(), audioOnly: !!audioOnly, audio: !!audio }); deviceStatus(deviceId, 'connecting'); callback({ ok: true });
+    console.log(`[watch] ${deviceId} start mode=${mode} audio=${audio}`);
   });
   socket.on('watch:accepted', ({ viewerId }) => {
     if (socket.data.role === 'device' && activeViews.get(socket.data.deviceId) === viewerId) viewerSockets.get(viewerId)?.emit('watch:accepted', { deviceId: socket.data.deviceId });
@@ -613,6 +613,11 @@ io.on('connection', (socket) => {
   socket.on('camera:switch', ({ deviceId }) => {
     if (socket.data.role !== 'viewer' || activeViews.get(deviceId) !== socket.id) return;
     deviceSockets.get(deviceId)?.emit('camera:switch');
+  });
+  // 观看端请求手机在同一 peer 上真开/关麦克风（加减音轨 + 重新协商，不重建会话）
+  socket.on('stream:audio', ({ deviceId, enabled }) => {
+    if (socket.data.role !== 'viewer' || activeViews.get(deviceId) !== socket.id) return;
+    deviceSockets.get(deviceId)?.emit('stream:audio', { enabled: !!enabled });
   });
   socket.on('signal', ({ targetId, data }) => {
     if (!targetId || !data || typeof data !== 'object') return;

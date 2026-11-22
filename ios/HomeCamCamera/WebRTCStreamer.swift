@@ -26,6 +26,9 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var restartWork: DispatchWorkItem?
     private var restartCount = 0
     private var isAudioOnly = false
+    private var audioSource: RTCAudioSource?
+    private var audioTrack: RTCAudioTrack?
+    private var audioSender: RTCRtpSender?
     private let maxRestarts = 3
     var isActive: Bool { peer != nil }
     var audioOnlyActive: Bool { isAudioOnly }
@@ -36,7 +39,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         super.init()
     }
 
-    func start(viewerID: String, iceServers: [IceServerConfiguration], audioOnly: Bool = false) throws {
+    func start(viewerID: String, iceServers: [IceServerConfiguration], audioOnly: Bool = false, audioEnabled: Bool = true) throws {
         guard peer == nil else { return }
         currentViewerID = viewerID; currentIceServers = iceServers; restartCount = 0
         isAudioOnly = audioOnly
@@ -60,10 +63,39 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
             camera.startCapture(with: device, format: format, fps: min(Int(maxFps), 12))
             videoSource = source; capturer = camera
             peer.add(factory.videoTrack(with: source, trackId: "video"), streamIds: ["homecam"])
-            peer.add(factory.audioTrack(with: factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)), trackId: "audio"), streamIds: ["homecam"])
+            if audioEnabled { addAudioTrack() }
         }
         onStateChanged?(.connecting)
         onDiagnostic?("peer created, capturing, gathering=\(Self.gatheringName(peer.iceGatheringState))")
+    }
+
+    // MARK: - 动态开/关麦克风（同一 peer renegotiation，不断流）
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+    private func addAudioTrack() {
+        guard let peer, audioTrack == nil else { return }
+        configureAudioSession()
+        let source = factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
+        let track = factory.audioTrack(with: source, trackId: "audio")
+        let sender = peer.add(track, streamIds: ["homecam"])
+        audioSource = source; audioTrack = track; audioSender = sender
+    }
+    private func removeAudioTrack() {
+        guard let peer, let sender = audioSender else { return }
+        peer.removeTrack(sender)
+        audioTrack?.isEnabled = false
+        audioSender = nil; audioTrack = nil; audioSource = nil
+    }
+    /// 观看端请求真开/关麦克风：加减音轨后重新 createOffer，保持同一 peer 不重建。
+    func setAudioEnabled(_ enabled: Bool) {
+        guard peer != nil, !isAudioOnly else { return }
+        if enabled { addAudioTrack() } else { removeAudioTrack() }
+        onDiagnostic?("setAudioEnabled=\(enabled)，重新协商")
+        gatheredCandidates.removeAll(); answerSdpBase = ""
+        createOffer { [weak self] sdp in self?.signalingSendOffer?(sdp, "") }
     }
 
     // MARK: - 前后摄像头切换
@@ -212,6 +244,7 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         pendingAnswerCompletion = nil; answerSdpBase = ""; gatheredCandidates.removeAll()
         answerTimer?.cancel(); answerTimer = nil
         restartWork?.cancel(); restartWork = nil; restartCount = 0
+        audioSender = nil; audioTrack = nil; audioSource = nil
         currentViewerID = nil
         if notifyState { onStateChanged?(.idle) }
         isStopping = false

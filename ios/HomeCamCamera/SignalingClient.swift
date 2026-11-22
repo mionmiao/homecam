@@ -11,7 +11,8 @@ struct SignalingMessage {
 
 final class SignalingClient {
     var onConnected: (() -> Void)?; var onReconnected: (() -> Void)?
-    var onWatchStart: ((String, [IceServerConfiguration], Bool) -> Void)?
+    var onWatchStart: ((String, [IceServerConfiguration], Bool, Bool) -> Void)?   // viewerID, ice, audioOnly, audio
+    var onSetAudio: ((Bool) -> Void)?
     var onWatchStop: (() -> Void)?; var onSignal: ((SignalingMessage) -> Void)?; var onError: ((String) -> Void)?
     var onSocketLost: (() -> Void)?   // socket 断开（网络切换），与"服务端要求停止"区分
     var onRemoved: (() -> Void)?
@@ -21,6 +22,7 @@ final class SignalingClient {
     private let credentials: DeviceCredentials; private let manager: SocketManager; private let socket: SocketIOClient
     private var viewerID: String?
     private var currentAudioOnly = false
+    private var currentAudioEnabled = false
     private var pendingCandidates: [CandidateMessage] = []
     private var hasConnectedOnce = false
     private let pathMonitor = NWPathMonitor()
@@ -62,6 +64,11 @@ final class SignalingClient {
         socket.on("signal") { [weak self] data, _ in self?.handleSignal(data) }
         socket.on("device:removed") { [weak self] _, _ in self?.onRemoved?() }
         socket.on("camera:switch") { [weak self] _, _ in self?.onSwitchCamera?() }
+        socket.on("stream:audio") { [weak self] data, _ in
+            let enabled = (data.first as? [String: Any])?["enabled"] as? Bool ?? true
+            self?.currentAudioEnabled = enabled
+            self?.onSetAudio?(enabled)
+        }
         socket.on("device:notice") { [weak self] data, _ in
             let payload = data.first as? [String: Any]
             let title = payload?["title"] as? String ?? "您有一条未接来电"
@@ -142,7 +149,9 @@ final class SignalingClient {
         }
         onDiagnostic?("ICE parsed: \(ice.count) servers, urls=\(ice.map { $0.urls.joined(separator: ",") }.joined(separator: " | "))")
         currentAudioOnly = (message["audioOnly"] as? Bool) ?? false
-        onWatchStart?(viewerID, ice, currentAudioOnly)
+        let audioEnabled = (message["audio"] as? Bool) ?? !currentAudioOnly
+        currentAudioEnabled = audioEnabled
+        onWatchStart?(viewerID, ice, currentAudioOnly, audioEnabled)
     }
     /// 服务端确认会话可恢复：重建流并重新协商
     private func handleWatchResumed(_ values: [Any]) {
@@ -150,7 +159,9 @@ final class SignalingClient {
         self.viewerID = viewerID
         onDiagnostic?("会话已恢复，重新协商")
         let ice = credentials.iceServers ?? []
-        onWatchStart?(viewerID, ice, currentAudioOnly)
+        let wasAudioOnly = currentAudioOnly
+        let audioEnabled = wasAudioOnly ? true : (currentAudioEnabled)
+        onWatchStart?(viewerID, ice, wasAudioOnly, audioEnabled)
     }
     private static func anyArray(_ value: Any?) -> [Any] {        if let arr = value as? [Any] { return arr }
         if let arr = value as? NSArray { return arr as? [Any] ?? [] }
