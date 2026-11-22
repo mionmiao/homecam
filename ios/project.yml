@@ -31,6 +31,8 @@ targets:
         NSCameraUsageDescription: 仅在网页端开始观看时使用摄像头传输家庭画面。
         NSMicrophoneUsageDescription: 仅在网页端开始观看时传输声音。
         UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.homecam.camera

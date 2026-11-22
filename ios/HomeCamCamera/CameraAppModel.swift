@@ -119,7 +119,8 @@ final class CameraAppModel: ObservableObject {
             isActive = false
             needsForegroundCapture = true  // 真正进后台，下次回前台要拍
             // 真正切后台：给几秒宽限，期间回前台则取消；持续后台才停止采集
-            guard isStreaming, backgroundStopWork == nil else { return }
+            // 音频监听模式：后台保持音频流不中断
+            guard isStreaming, !stream.audioOnlyActive, backgroundStopWork == nil else { return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, !self.isActive else { return }
                 self.applicationMovedToBackground()
@@ -230,6 +231,7 @@ final class CameraAppModel: ObservableObject {
     func applicationMovedToBackground() {
         backgroundStopWork?.cancel(); backgroundStopWork = nil
         guard isStreaming else { return }
+        if stream.audioOnlyActive { statusText = "后台音频监听中"; return }
         stream.stop("background"); signaling?.sendStopped(); statusText = "已进入后台，直播已停止"
     }
 
@@ -295,7 +297,8 @@ final class CameraAppModel: ObservableObject {
             do {
                 // iOS cannot reliably capture in the background; decline instead of
                 // leaving the viewer stuck in a "connecting" state.
-                guard isActive else { signaling?.sendStopped(); return }
+                // 音频监听允许后台启动（UIBackgroundModes audio + 后台 AVAudioSession）
+                guard isActive || audioOnly else { signaling?.sendStopped(); return }
                 try await requestCapturePermissions(audioOnly: audioOnly)
                 // 网络抖动时服务端可能连续下发恢复通知：3 秒内忽略重复重建
                 if let last = lastRebuildAt, Date().timeIntervalSince(last) < 3 { return }

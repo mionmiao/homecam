@@ -47,6 +47,10 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         guard let peer else { throw StreamerError.unavailable }
         if audioOnly {
             onDiagnostic?("audio-only mode: microphone only, no camera")
+            // 后台音频：playAndRecord + 允许后台，保证进后台后麦克风采集不中断
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+            try? session.setActive(true, options: .notifyOthersOnDeactivation)
             peer.add(factory.audioTrack(with: factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)), trackId: "audio"), streamIds: ["homecam"])
         } else {
             let source = factory.videoSource(); let camera = RTCCameraVideoCapturer(delegate: source)
