@@ -580,12 +580,14 @@ io.on('connection', (socket) => {
       }
     }
   }
-  socket.on('watch:start', ({ deviceId }, callback = () => {}) => {
+  socket.on('watch:start', ({ deviceId, audioOnly = false }, callback = () => {}) => {
     if (socket.data.role !== 'viewer') return callback({ error: 'Unauthorized' });
     const device = deviceSockets.get(deviceId);
     if (!device) return callback({ error: 'Device is offline' });
     if (activeViews.has(deviceId)) return callback({ error: 'Device is already being watched' });
-    activeViews.set(deviceId, socket.id); device.emit('watch:start', { viewerId: socket.id, iceServers: activeIceServers() }); deviceStatus(deviceId, 'connecting'); callback({ ok: true });
+    const mode = audioOnly ? 'audio' : 'video';
+    activeViews.set(deviceId, socket.id); device.emit('watch:start', { viewerId: socket.id, iceServers: activeIceServers(), audioOnly: !!audioOnly }); deviceStatus(deviceId, 'connecting'); callback({ ok: true });
+    console.log(`[watch] ${deviceId} start mode=${mode}`);
   });
   socket.on('watch:accepted', ({ viewerId }) => {
     if (socket.data.role === 'device' && activeViews.get(socket.data.deviceId) === viewerId) viewerSockets.get(viewerId)?.emit('watch:accepted', { deviceId: socket.data.deviceId });

@@ -11,7 +11,7 @@ struct SignalingMessage {
 
 final class SignalingClient {
     var onConnected: (() -> Void)?; var onReconnected: (() -> Void)?
-    var onWatchStart: ((String, [IceServerConfiguration]) -> Void)?
+    var onWatchStart: ((String, [IceServerConfiguration], Bool) -> Void)?
     var onWatchStop: (() -> Void)?; var onSignal: ((SignalingMessage) -> Void)?; var onError: ((String) -> Void)?
     var onSocketLost: (() -> Void)?   // socket 断开（网络切换），与"服务端要求停止"区分
     var onRemoved: (() -> Void)?
@@ -20,6 +20,7 @@ final class SignalingClient {
     var onNotice: ((String, String) -> Void)?   // 观看端发来的未接来电提醒（title, body）
     private let credentials: DeviceCredentials; private let manager: SocketManager; private let socket: SocketIOClient
     private var viewerID: String?
+    private var currentAudioOnly = false
     private var pendingCandidates: [CandidateMessage] = []
     private var hasConnectedOnce = false
     private let pathMonitor = NWPathMonitor()
@@ -140,7 +141,8 @@ final class SignalingClient {
             }
         }
         onDiagnostic?("ICE parsed: \(ice.count) servers, urls=\(ice.map { $0.urls.joined(separator: ",") }.joined(separator: " | "))")
-        onWatchStart?(viewerID, ice)
+        currentAudioOnly = (message["audioOnly"] as? Bool) ?? false
+        onWatchStart?(viewerID, ice, currentAudioOnly)
     }
     /// 服务端确认会话可恢复：重建流并重新协商
     private func handleWatchResumed(_ values: [Any]) {
@@ -148,7 +150,7 @@ final class SignalingClient {
         self.viewerID = viewerID
         onDiagnostic?("会话已恢复，重新协商")
         let ice = credentials.iceServers ?? []
-        onWatchStart?(viewerID, ice)
+        onWatchStart?(viewerID, ice, currentAudioOnly)
     }
     private static func anyArray(_ value: Any?) -> [Any] {        if let arr = value as? [Any] { return arr }
         if let arr = value as? NSArray { return arr as? [Any] ?? [] }

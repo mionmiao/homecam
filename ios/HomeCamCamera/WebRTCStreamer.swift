@@ -25,8 +25,10 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
     private var currentIceServers: [IceServerConfiguration] = []
     private var restartWork: DispatchWorkItem?
     private var restartCount = 0
+    private var isAudioOnly = false
     private let maxRestarts = 3
     var isActive: Bool { peer != nil }
+    var audioOnlyActive: Bool { isAudioOnly }
 
     override init() {
         RTCInitializeSSL(); RTCPeerConnectionFactory.initialize()
@@ -34,22 +36,28 @@ final class WebRTCStreamer: NSObject, RTCPeerConnectionDelegate {
         super.init()
     }
 
-    func start(viewerID: String, iceServers: [IceServerConfiguration]) throws {
+    func start(viewerID: String, iceServers: [IceServerConfiguration], audioOnly: Bool = false) throws {
         guard peer == nil else { return }
         currentViewerID = viewerID; currentIceServers = iceServers; restartCount = 0
+        isAudioOnly = audioOnly
         let configuration = RTCConfiguration(); configuration.sdpSemantics = .unifiedPlan
         configuration.iceServers = iceServers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         onDiagnostic?("RTCIceServer built: count=\(configuration.iceServers.count), users=\(iceServers.map { $0.username.isEmpty ? "EMPTY" : "set(\($0.username.count))" }.joined(separator: ",")), creds=\(iceServers.map { $0.credential.isEmpty ? "EMPTY" : "set(\($0.credential.count))" }.joined(separator: ","))")
         peer = factory.peerConnection(with: configuration, constraints: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil), delegate: self)
         guard let peer else { throw StreamerError.unavailable }
-        let source = factory.videoSource(); let camera = RTCCameraVideoCapturer(delegate: source)
-        guard let device = preferredDevice() else { throw StreamerError.unavailable }
-        guard let format = Self.bestFormat(for: device) else { throw StreamerError.unavailable }
-        let maxFps = format.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 12
-        camera.startCapture(with: device, format: format, fps: min(Int(maxFps), 12))
-        videoSource = source; capturer = camera
-        peer.add(factory.videoTrack(with: source, trackId: "video"), streamIds: ["homecam"])
-        peer.add(factory.audioTrack(with: factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)), trackId: "audio"), streamIds: ["homecam"])
+        if audioOnly {
+            onDiagnostic?("audio-only mode: microphone only, no camera")
+            peer.add(factory.audioTrack(with: factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)), trackId: "audio"), streamIds: ["homecam"])
+        } else {
+            let source = factory.videoSource(); let camera = RTCCameraVideoCapturer(delegate: source)
+            guard let device = preferredDevice() else { throw StreamerError.unavailable }
+            guard let format = Self.bestFormat(for: device) else { throw StreamerError.unavailable }
+            let maxFps = format.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 12
+            camera.startCapture(with: device, format: format, fps: min(Int(maxFps), 12))
+            videoSource = source; capturer = camera
+            peer.add(factory.videoTrack(with: source, trackId: "video"), streamIds: ["homecam"])
+            peer.add(factory.audioTrack(with: factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)), trackId: "audio"), streamIds: ["homecam"])
+        }
         onStateChanged?(.connecting)
         onDiagnostic?("peer created, capturing, gathering=\(Self.gatheringName(peer.iceGatheringState))")
     }

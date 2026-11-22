@@ -2,8 +2,8 @@ const $ = (selector) => document.querySelector(selector);
 let pairingCode = ''; let pairingTimer = null;
 const roleOf = () => localStorage.getItem('homecam-role') || '';
 const applyRole = (role) => { document.body.dataset.role = role; };
-let token = null; let socket; let selected; let peer; let recorder; let chunks = []; let recTimer = null; let recStart = 0; let watching = false; let pendingCandidates = []; let resumeTimer = null; let editingDeviceId = null;
-const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton'), fullscreen: $('#fullscreenButton'), recBadge: $('#recBadge'), recTime: $('#recTime'), videoWrap: $('#videoWrap') };
+let token = null; let socket; let selected; let peer; let recorder; let chunks = []; let recTimer = null; let recStart = 0; let watching = false; let pendingCandidates = []; let resumeTimer = null; let editingDeviceId = null; let audioMode = false; let audioRecorder = null; let audioChunks = [];
+const ui = { login: $('#login'), dashboard: $('#dashboard'), error: $('#loginError'), devices: $('#devices'), video: $('#video'), placeholder: $('#placeholder'), status: $('#watchStatus'), connection: $('#connection'), watch: $('#watchButton'), listen: $('#listenButton'), recordAudio: $('#recordAudioButton'), stop: $('#stopButton'), mute: $('#muteButton'), record: $('#recordButton'), password: $('#password'), switchCamera: $('#switchCameraButton'), fullscreen: $('#fullscreenButton'), recBadge: $('#recBadge'), recTime: $('#recTime'), videoWrap: $('#videoWrap') };
 const view = { rotation: 0, zoom: 1, mirrored: false, exposure: 0 }; // exposure in EV (stops)
 function applyView() {
   ui.video.style.transform = `rotate(${view.rotation}deg) scale(${view.zoom}) scaleX(${view.mirrored ? -1 : 1})`;
@@ -16,7 +16,18 @@ function resetView() { view.rotation = 0; view.zoom = 1; view.mirrored = false; 
 const authHeaders = () => ({ 'Content-Type': 'application/json' });  // 会话走 HttpOnly Cookie，JS 不接触 token
 function expire() { localStorage.removeItem('homecam-token'); localStorage.removeItem('homecam-role'); sessionStorage.setItem('homecam-expired', '1'); location.reload(); }
 async function api(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...authHeaders(), ...options.headers } }); if (response.status === 401) { expire(); throw new Error('登录已过期'); } if (!response.ok) throw new Error((await response.json()).error || '请求失败'); return response.json(); }
-function setWatchUi(active) { watching = active; ui.watch.disabled = !selected || active; ui.stop.disabled = !active; ui.mute.disabled = !active; ui.record.disabled = !active; ui.switchCamera.disabled = !active; ui.fullscreen.disabled = !active; ui.placeholder.hidden = active; }
+function setWatchUi(active) {
+  watching = active;
+  ui.watch.disabled = !selected || active; ui.listen.disabled = !selected || active;
+  ui.stop.disabled = !active;
+  ui.mute.disabled = !active || audioMode;              // 音频模式：音量可调，mute 按钮无意义
+  ui.record.disabled = !active || audioMode;            // 录像仅视频模式
+  ui.recordAudio.disabled = !active || !audioMode;      // 录音仅音频模式
+  ui.switchCamera.disabled = !active || audioMode;
+  ui.fullscreen.disabled = !active || audioMode;
+  ui.placeholder.hidden = active;
+  ui.video.style.visibility = audioMode ? 'hidden' : 'visible';
+}
 // 设备上线时浏览器通知（离线 → 待命）
 const lastDeviceStatus = new Map();
 function requestNotifyPermission() {
@@ -56,8 +67,8 @@ function select(device) {
   document.querySelectorAll('.device').forEach((e) => e.classList.toggle('selected', e.dataset.id === device.id));
   const stale = !!device.unpairedAt;
   ui.status.textContent = `${device.name}：${stale ? '已失效（手机端已解绑）' : statusLabel(device.status)}`;
-  setWatchUi(false);
-  if (stale) ui.watch.disabled = true;
+  audioMode = false; setWatchUi(false);
+  if (stale) { ui.watch.disabled = true; ui.listen.disabled = true; }
   loadPhotos();  // 照片与设备绑定：切换设备即加载该设备的最近照片
 }
 function renderDevices(devices) {
@@ -104,7 +115,7 @@ async function commitRename(device, name) {
 }
 async function removeDevice(device) { const stale = !!device.unpairedAt; if (!confirm(stale ? `移除已失效设备「${device.name}」？\n仅从列表删除记录，手机端无需操作。` : `删除设备「${device.name}」？\n手机端会收到通知并解除配对，需要重新配对才能使用。`)) return; try { await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' }); if (selected?.id === device.id) { selected = null; cleanup(); clearPhotos(); } await loadDevices(); } catch (e) { setPairNotice(e.message, 'error'); } }
 function connect() { socket = io({ withCredentials: true }); socket.on('connect', () => { ui.connection.textContent = '已连接'; loadDevices(); }); socket.on('connect_error', (err) => { if (err?.message === 'Unauthorized') return expire(); ui.connection.textContent = '连接失败'; }); socket.on('devices', renderDevices); socket.on('device:status', ({ deviceId, status }) => { handleDeviceStatus(deviceId, status); if (selected?.id === deviceId) { selected.status = status; ui.status.textContent = `${selected.name}：${statusLabel(status)}`; } loadDevices(); }); socket.on('watch:accepted', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机已接受，等待其 offer'); }); socket.on('signal', async ({ fromId, data }) => receiveSignal(fromId, data)); socket.on('watch:stopped', () => cleanup()); socket.on('watch:resume', ({ deviceId }) => { if (deviceId !== selected?.id) return; appendDiag('手机网络切换，准备重新协商'); setWatchUi(true); ui.status.textContent = '手机网络切换中，正在重连…'; clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { if (peer && peer.connectionState !== 'connected') { appendDiag('重建前清理旧连接'); cleanup(); setWatchUi(true); } }, 3000); }); socket.on('device:removed', ({ deviceId }) => { if (selected?.id === deviceId) { selected = null; cleanup(); clearPhotos(); } loadDevices(); }); socket.on('device:unpaired', ({ deviceId, name }) => { const wasSelected = selected?.id === deviceId; if (wasSelected) { cleanup(); selected.unpairedAt = Date.now(); selected.status = 'unpaired'; ui.status.textContent = `${selected.name}：已失效（手机端已解绑）`; } appendDiag(`设备 ${name || deviceId.slice(0, 8)} 已在手机端解除配对${wasSelected ? '，已停止观看（设备保留为失效）' : ''}`); loadDevices(); }); socket.on('pairing:result', ({ status, code, name }) => { if (!pairingCode || (code && code !== pairingCode)) return; clearInterval(pairingTimer); pairingTimer = null; pairingCode = ''; if (status === 'paired') { setPairNotice(`配对成功${name ? '：' + name : ''}`, 'success'); loadDevices(); } }); socket.on('device:diagnostic', ({ deviceId, message }) => { if (deviceId === selected?.id) appendDiag('手机端: ' + message); }); }
-function initPeer(iceServers) { peer = new RTCPeerConnection({ iceServers }); pendingCandidates = []; appendDiag(`ICE servers: ${iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(',')).join(' | ')}`); peer.onicecandidate = ({ candidate }) => { if (candidate) { const t = (candidate.type || '').toLowerCase(); appendDiag(`my candidate: ${t || '?'} ${String(candidate.candidate).slice(0, 40)}`); socket.emit('signal', { targetId: selected.id, data: { type: 'candidate', candidate } }); } }; peer.ontrack = ({ streams }) => { ui.video.srcObject = streams[0]; ui.status.textContent = '正在观看'; appendDiag('ontrack: 收到媒体流'); }; peer.onconnectionstatechange = () => { const s = peer?.connectionState; appendDiag(`peer: ${s}`); if (s === 'closed') cleanup(); else if (s === 'failed' || s === 'disconnected') setTimeout(() => { if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) { appendDiag('ICE 断开超时，清理'); cleanup(); } }, 25000); }; peer.oniceconnectionstatechange = () => appendDiag(`ice: ${peer.iceConnectionState}`); }
+function initPeer(iceServers) { peer = new RTCPeerConnection({ iceServers }); pendingCandidates = []; appendDiag(`ICE servers: ${iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(',')).join(' | ')}`); peer.onicecandidate = ({ candidate }) => { if (candidate) { const t = (candidate.type || '').toLowerCase(); appendDiag(`my candidate: ${t || '?'} ${String(candidate.candidate).slice(0, 40)}`); socket.emit('signal', { targetId: selected.id, data: { type: 'candidate', candidate } }); } }; peer.ontrack = ({ streams, track }) => { ui.video.srcObject = streams[0]; if (audioMode) { ui.video.muted = false; ui.status.textContent = '正在收听（仅麦克风）'; } else ui.status.textContent = '正在观看'; appendDiag(`ontrack: 收到 ${track?.kind || 'media'} 流`); }; peer.onconnectionstatechange = () => { const s = peer?.connectionState; appendDiag(`peer: ${s}`); if (s === 'closed') cleanup(); else if (s === 'failed' || s === 'disconnected') setTimeout(() => { if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) { appendDiag('ICE 断开超时，清理'); cleanup(); } }, 25000); }; peer.oniceconnectionstatechange = () => appendDiag(`ice: ${peer.iceConnectionState}`); }
 async function handleOffer(sdp) {
   const isRestart = !!peer && peer.signalingState !== 'closed';
   appendDiag(`${isRestart ? 'ICE restart offer' : 'offer'} received: ${(sdp.match(/a=candidate/g) || []).length} candidates`);
@@ -207,7 +218,13 @@ function copyDiag() {
 function fallbackCopy(text, done) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { setPairNotice('复制失败，请手动复制：' + text, 'error'); } ta.remove(); }
 document.getElementById('diagBox')?.querySelector('summary')?.addEventListener('click', (e) => { if (e.target.id === 'copyDiagButton') e.preventDefault(); });
 async function receiveSignal(fromId, data) { if (fromId !== selected?.id) return; if (data.type === 'offer') await handleOffer(data.sdp); else if (data.type === 'candidate') { if (peer?.remoteDescription) await peer.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate); } }
-function cleanup() { recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi(); peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null; resetView(); setWatchUi(false); ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; setTimeout(checkWebVersion, 500); }
+function cleanup() {
+  recorder?.state === 'recording' && recorder.stop(); recorder = null; stopRecUi();
+  audioRecorder?.state === 'recording' && audioRecorder.stop(); audioRecorder = null; audioChunks = [];
+  peer?.close(); peer = null; pendingCandidates = []; ui.video.srcObject = null;
+  audioMode = false; resetView(); setWatchUi(false);
+  ui.status.textContent = selected ? `${selected.name}：已停止` : '待命'; setTimeout(checkWebVersion, 500);
+}
 async function login() { try { const data = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#password').value }) }).then(async (r) => { if (!r.ok) throw new Error('密码错误'); return r.json(); }); localStorage.removeItem('homecam-token'); localStorage.setItem('homecam-role', data.role || 'admin'); applyRole(data.role || 'admin'); ui.error.textContent = ''; ui.login.hidden = true; ui.dashboard.hidden = false; requestNotifyPermission(); connect(); loadPhotos(); } catch (e) { ui.error.textContent = e.message; } }
 async function logout() {
   try { await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }); } catch { /* 服务端不可达也要清本地 */ }
@@ -239,7 +256,13 @@ $('#pwSubmit').onclick = async () => {
     expire();  // 会话已全部失效，回登录页
   } catch (e) { result.textContent = e.message; }
 };
-function setPairNotice(text, kind = '') { const n = $('#pairing'); if (!n) return; n.hidden = false; n.textContent = text; n.className = 'notice' + (kind ? ' ' + kind : ''); }
+let pairNoticeTimer = null;
+function setPairNotice(text, kind = '', duration = 0) {
+  const n = $('#pairing'); if (!n) return;
+  clearTimeout(pairNoticeTimer); pairNoticeTimer = null;
+  n.hidden = false; n.textContent = text; n.className = 'notice' + (kind ? ' ' + kind : '');
+  if (duration > 0) pairNoticeTimer = setTimeout(() => { n.hidden = true; pairNoticeTimer = null; }, duration);
+}
 $('#pairButton').onclick = async () => {
   try {
     const { code, expiresAt, ttlMs } = await api('/api/pairing-codes', { method: 'POST' });
@@ -257,12 +280,23 @@ $('#pairButton').onclick = async () => {
   } catch (e) { setPairNotice(e.message, 'error'); }
 };
 $('#refreshButton').onclick = loadDevices;
-ui.watch.onclick = () => { if (selected?.unpairedAt) return void setPairNotice('设备已失效（手机端已解绑），请删除后重新配对', 'error'); socket.emit('watch:start', { deviceId: selected.id }, (reply) => { if (reply.error) return void setPairNotice(reply.error, 'error'); setWatchUi(true); ui.status.textContent = '正在连接手机…'; }); };
+function startWatchSession(audioOnly = false) {
+  if (!selected) return;
+  if (selected.unpairedAt) return void setPairNotice('设备已失效（手机端已解绑），请删除后重新配对', 'error');
+  audioMode = audioOnly;
+  socket.emit('watch:start', { deviceId: selected.id, audioOnly }, (reply) => {
+    if (reply.error) { audioMode = false; return void setPairNotice(reply.error, 'error'); }
+    setWatchUi(true);
+    ui.status.textContent = audioOnly ? '正在连接手机（仅声音）…' : '正在连接手机…';
+  });
+}
+ui.watch.onclick = () => startWatchSession(false);
+ui.listen.onclick = () => startWatchSession(true);
 async function sendNotice(device) {
-  if (!device || device.unpairedAt || device.status !== 'idle') return void setPairNotice('仅可在设备待命（在线且未观看）时发送来电提醒', 'error');
+  if (!device || device.unpairedAt || device.status !== 'idle') return void setPairNotice('仅可在设备待命（在线且未观看）时发送来电提醒', 'error', 5000);
   try {
     await api(`/api/devices/${encodeURIComponent(device.id)}/notify`, { method: 'POST' });
-    setPairNotice(`已向「${device.name}」发送来电提醒，手机下次打开 App 时显示`, 'success');
+    setPairNotice(`已向「${device.name}」发送来电提醒，手机下次打开 App 时显示`, 'success', 5000);
   } catch (e) { setPairNotice(e.message, 'error'); }
 }
 ui.stop.onclick = stopWatch;
@@ -274,6 +308,23 @@ $('#mirrorButton').onclick = () => { view.mirrored = !view.mirrored; applyView()
 $('#resetViewButton').onclick = resetView;
 $('#exposure').oninput = (e) => { view.exposure = +e.target.value; applyView(); };
 ui.mute.onclick = () => { ui.video.muted = !ui.video.muted; ui.mute.textContent = ui.video.muted ? '打开声音' : '静音'; };
+// 纯音频录音（仅音频监听模式可用）
+ui.recordAudio.onclick = () => {
+  if (audioRecorder?.state === 'recording') return void audioRecorder.stop();
+  const stream = ui.video.srcObject;
+  if (!stream || !stream.getAudioTracks().length) return void setPairNotice('没有可录制的音频流', 'error');
+  audioChunks = [];
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+  audioRecorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), { mimeType: mime });
+  audioRecorder.ondataavailable = (e) => e.data.size && audioChunks.push(e.data);
+  audioRecorder.onstop = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(audioChunks, { type: 'audio/webm' }));
+    a.download = `homecam-audio-${new Date().toISOString().replaceAll(':', '-')}.webm`; a.click(); URL.revokeObjectURL(a.href);
+    ui.recordAudio.textContent = '⏺ 录音'; setPairNotice('录音已保存', 'success', 4000);
+  };
+  audioRecorder.start(1000);
+  ui.recordAudio.textContent = '⏹ 停止录音';
+};
 function updateRecTime() { const s = Math.floor((Date.now() - recStart) / 1000); ui.recTime.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
 function stopRecUi() { clearInterval(recTimer); recTimer = null; ui.recBadge.hidden = true; ui.record.textContent = '开始本地录像'; }
 ui.record.onclick = () => {

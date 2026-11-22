@@ -255,7 +255,7 @@ final class CameraAppModel: ObservableObject {
             self.statusText = self.isStreaming ? "连接已恢复，正在直播" : "连接已恢复，待命中：摄像头和麦克风未启用"
             // 服务端在设备重连时会主动下发 watch:resumed 触发重新协商，此处无需重复请求
         }}
-        client.onWatchStart = { [weak self] viewerID, iceServers in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers) } }
+        client.onWatchStart = { [weak self] viewerID, iceServers, audioOnly in Task { @MainActor in self?.startStream(viewerID: viewerID, iceServers: iceServers, audioOnly: audioOnly) } }
         client.onSignal = { [weak self] signal in Task { @MainActor in self?.receive(signal: signal) } }
         client.onWatchStop = { [weak self] in Task { @MainActor in
             guard let self, self.isStreaming else { return }  // 已停止时不再 stop，避免 idle 上报死循环
@@ -290,13 +290,13 @@ final class CameraAppModel: ObservableObject {
         NoticeChecker.fetchAndShow(serverURL: credentials.serverURL, deviceID: credentials.deviceID)
     }
 
-    private func startStream(viewerID: String, iceServers: [IceServerConfiguration]) {
+    private func startStream(viewerID: String, iceServers: [IceServerConfiguration], audioOnly: Bool = false) {
         Task {
             do {
                 // iOS cannot reliably capture in the background; decline instead of
                 // leaving the viewer stuck in a "connecting" state.
                 guard isActive else { signaling?.sendStopped(); return }
-                try await requestCapturePermissions()
+                try await requestCapturePermissions(audioOnly: audioOnly)
                 // 网络抖动时服务端可能连续下发恢复通知：3 秒内忽略重复重建
                 if let last = lastRebuildAt, Date().timeIntervalSince(last) < 3 { return }
                 lastRebuildAt = Date()
@@ -304,7 +304,7 @@ final class CameraAppModel: ObservableObject {
                 let effectiveIce = RuntimeConfig.shared.iceServers ?? iceServers
                 // 网络切换后重建：先停掉旧 peer（不上报 idle，避免服务端释放会话），再新建重新协商
                 if self.stream.isActive { self.stream.stop("rebuild", notifyState: false) }
-                try stream.start(viewerID: viewerID, iceServers: effectiveIce)
+                try stream.start(viewerID: viewerID, iceServers: effectiveIce, audioOnly: audioOnly)
                 // 手机做 offerer：先告诉观看端已接受，等 candidate 收齐后发 offer
                 signaling?.acceptWatch(viewerID: viewerID)
                 stream.createOffer { [weak self] sdp in self?.signaling?.sendOffer(sdp) }
@@ -320,10 +320,13 @@ final class CameraAppModel: ObservableObject {
         }
     }
 
-    private func requestCapturePermissions() async throws {
-        let camera = await AVCaptureDevice.requestAccess(for: .video)
+    private func requestCapturePermissions(audioOnly: Bool) async throws {
         let microphone = await AVCaptureDevice.requestAccess(for: .audio)
-        guard camera && microphone else { throw CameraError.permissionDenied }
+        guard microphone else { throw CameraError.permissionDenied }
+        if !audioOnly {
+            let camera = await AVCaptureDevice.requestAccess(for: .video)
+            guard camera else { throw CameraError.permissionDenied }
+        }
     }
 
     private static func normalizedURL(_ value: String) -> URL? {
